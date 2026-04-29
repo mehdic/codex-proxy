@@ -1,0 +1,37 @@
+{
+  "name": "codex-proxy",
+  "version": "0.1.0",
+  "description": "OpenAI-compatible local HTTP API proxy for Codex app-server over stdio JSON-RPC",
+  "type": "module",
+  "main": "dist/server/standalone.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server/standalone.js",
+    "dev": "tsc --watch",
+    "test": "node --test dist/__tests__/*.test.js",
+    "pretest": "npm run build"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "proxy",
+    "api",
+    "app-server",
+    "json-rpc"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "uuid": "^11.0.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.7",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.7.3"
+  }
+}
