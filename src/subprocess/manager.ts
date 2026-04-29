@@ -161,33 +161,38 @@ export class CodexSubprocess {
     return initResult;
   }
 
+  /** Start a Codex thread on this app-server worker. */
+  async startThread(options: CodexSubprocessOptions, ephemeral = true): Promise<string> {
+    if (this.dead) throw new CodexProxyError("codex", "app-server process is dead", { detail: this.stderr });
+
+    const threadResp = await this.sendRequest<ThreadStartResponse>("thread/start", {
+      model: options.model,
+      cwd: options.cwd || process.cwd(),
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      ephemeral,
+      baseInstructions: options.instructions || null,
+      experimentalRawEvents: false,
+      persistExtendedHistory: false,
+    }, options.initTimeoutMs || CONFIG.initTimeoutMs);
+
+    return threadResp.thread.id;
+  }
+
   /**
-   * Start an ephemeral thread and submit a turn with the given user
-   * text. Returns the full assistant text. For streaming, provide a
-   * deltaCallback that receives each text delta as it arrives.
+   * Submit a turn to an existing thread on this app-server worker.
+   * For streaming, provide a deltaCallback that receives each text
+   * delta as it arrives.
    */
-  async submitTurn(
+  async submitTurnOnThread(
+    threadId: string,
     userText: string,
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
   ): Promise<TurnResult> {
     if (this.dead) throw new CodexProxyError("codex", "app-server process is dead", { detail: this.stderr });
 
-    let threadId: string;
     let tokenUsage: TokenUsageBreakdown | null = null;
-
-    // Start thread
-    const threadResp = await this.sendRequest<ThreadStartResponse>("thread/start", {
-      model: options.model,
-      cwd: options.cwd || process.cwd(),
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      ephemeral: true,
-      baseInstructions: options.instructions || null,
-      experimentalRawEvents: false,
-      persistExtendedHistory: false,
-    }, options.initTimeoutMs || CONFIG.initTimeoutMs);
-    threadId = threadResp.thread.id;
 
     // Collect assistant text from streamed deltas
     let assistantText = "";
@@ -298,6 +303,20 @@ export class CodexSubprocess {
     }
 
     return turnPromise;
+  }
+
+  /**
+   * Start an ephemeral thread and submit a turn with the given user
+   * text. Returns the full assistant text. For streaming, provide a
+   * deltaCallback that receives each text delta as it arrives.
+   */
+  async submitTurn(
+    userText: string,
+    options: CodexSubprocessOptions,
+    deltaCallback?: DeltaCallback,
+  ): Promise<TurnResult> {
+    const threadId = await this.startThread(options, true);
+    return this.submitTurnOnThread(threadId, userText, options, deltaCallback);
   }
 
   /**

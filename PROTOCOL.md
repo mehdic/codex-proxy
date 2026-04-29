@@ -25,6 +25,8 @@ Then it sends Codex app-server JSON-RPC:
 
 In `pool` runtime, `initialize` and `initialized` happen once per app-server worker. `thread/start` and `turn/start` still happen per request with `ephemeral: true`.
 
+In opt-in session mode (`CODEX_PROXY_SESSIONS=1` and a valid `X-Codex-Proxy-Session` header), `initialize`, `initialized`, and `thread/start` happen once per session key. Later sequential requests for that same sanitized session id, model, cwd hash, and instruction/config fingerprint call `turn/start` on the stored thread id. Session workers are killed on TTL/LRU eviction, abort, or failure.
+
 Deltas from `item/agentMessage/delta` become OpenAI streaming chunks:
 
 ```text

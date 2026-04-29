@@ -14,11 +14,35 @@ export interface ChatCompletionRequest {
   top_p?: number;
   stop?: string | string[];
   user?: string;
+  tools?: ChatCompletionTool[];
+  tool_choice?: "none" | "auto" | "required" | ChatCompletionNamedToolChoice;
+  response_format?: ResponseFormat;
 }
+
+export interface ChatCompletionTool {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+    strict?: boolean;
+  };
+}
+
+export interface ChatCompletionNamedToolChoice {
+  type: "function";
+  function: { name: string };
+}
+
+export type ResponseFormat =
+  | { type: "text" }
+  | { type: "json_object" }
+  | { type: "json_schema"; json_schema: { name?: string; schema?: Record<string, unknown>; strict?: boolean } };
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "developer";
-  content: string | ContentPart[];
+  content: string | ContentPart[] | null;
+  tool_calls?: ChatCompletionToolCall[];
 }
 
 export interface ContentPart {
@@ -38,8 +62,17 @@ export interface ChatCompletionResponse {
 
 export interface ChatCompletionChoice {
   index: number;
-  message: { role: "assistant"; content: string };
+  message: { role: "assistant"; content: string | null; tool_calls?: ChatCompletionToolCall[] };
   finish_reason: "stop" | "length" | "tool_calls" | null;
+}
+
+export interface ChatCompletionToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
 }
 
 export interface ChatCompletionChunk {
@@ -63,6 +96,18 @@ export interface TokenUsage {
   total_tokens: number;
 }
 
+export interface ResponseUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  input_tokens_details?: {
+    cached_tokens?: number;
+  };
+  output_tokens_details?: {
+    reasoning_tokens?: number;
+  };
+}
+
 // ── Responses API ───────────────────────────────────────────────────
 
 export interface ResponseRequest {
@@ -73,6 +118,9 @@ export interface ResponseRequest {
   temperature?: number;
   max_output_tokens?: number;
   user?: string;
+  tools?: ChatCompletionTool[];
+  tool_choice?: "none" | "auto" | "required" | ChatCompletionNamedToolChoice;
+  response_format?: ResponseFormat;
 }
 
 export interface ResponseInputItem {
@@ -93,7 +141,7 @@ export interface ResponseObject {
   status: "completed" | "failed" | "in_progress";
   output: ResponseOutputItem[];
   output_text?: string;
-  usage?: TokenUsage;
+  usage?: ResponseUsage;
   error?: { message: string; code: string } | null;
 }
 

@@ -12,18 +12,33 @@ import type {
   ResponseObject,
   ResponseOutputItem,
   TokenUsage,
+  ResponseUsage,
 } from "../types/openai.js";
 import type { TurnResult } from "../subprocess/manager.js";
 import type { TokenUsageBreakdown } from "../types/codex.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function codexUsageToOpenAI(usage: TokenUsageBreakdown | null): TokenUsage | undefined {
-  if (!usage) return undefined;
+function codexUsageToOpenAI(usage: TokenUsageBreakdown | null): TokenUsage {
+  if (!usage) {
+    return { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  }
   return {
-    prompt_tokens: usage.inputTokens,
-    completion_tokens: usage.outputTokens,
-    total_tokens: usage.totalTokens,
+    prompt_tokens: usage.inputTokens ?? 0,
+    completion_tokens: usage.outputTokens ?? 0,
+    total_tokens: usage.totalTokens ?? ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)),
+  };
+}
+
+function codexUsageToResponseUsage(usage: TokenUsageBreakdown | null): ResponseUsage {
+  const input = usage?.inputTokens ?? 0;
+  const output = usage?.outputTokens ?? 0;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: usage?.totalTokens ?? input + output,
+    input_tokens_details: { cached_tokens: usage?.cachedInputTokens ?? 0 },
+    output_tokens_details: { reasoning_tokens: usage?.reasoningOutputTokens ?? 0 },
   };
 }
 
@@ -108,6 +123,55 @@ export function turnResultToChatCompletion(
   };
 }
 
+/** Build a non-streaming chat completion response containing a function tool call. */
+export function turnResultToToolCallChatCompletion(
+  result: TurnResult,
+  model: string,
+  toolName: string,
+): ChatCompletionResponse {
+  const args = extractJsonObjectString(result.text) || "{}";
+  return {
+    id: `chatcmpl-${result.turnId}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: `call_${result.turnId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32) || uuid()}`,
+              type: "function",
+              function: { name: toolName, arguments: args },
+            },
+          ],
+        },
+        finish_reason: "tool_calls",
+      },
+    ],
+    usage: codexUsageToOpenAI(result.usage),
+  };
+}
+
+function extractJsonObjectString(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced ? fenced[1] : trimmed).trim();
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) return null;
+  const json = candidate.slice(start, end + 1);
+  try {
+    return JSON.stringify(JSON.parse(json));
+  } catch {
+    return null;
+  }
+}
+
 /** Build a streaming chat completion chunk (delta). */
 export function makeChatCompletionChunk(
   id: string,
@@ -162,7 +226,7 @@ export function turnResultToResponseObject(
     status: result.finishReason === "error" ? "failed" : "completed",
     output: [outputItem],
     output_text: result.text,
-    usage: codexUsageToOpenAI(result.usage),
+    usage: codexUsageToResponseUsage(result.usage),
     error: result.finishReason === "error"
       ? { message: "Turn failed", code: "server_error" }
       : null,

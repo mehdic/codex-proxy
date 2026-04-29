@@ -25,6 +25,7 @@ The cost is translation complexity: OpenAI chat completions are stateless and me
 - conservative approvals/sandbox parameters where supported
 - text-only MVP
 - app-server reuse is limited to a bounded worker pool; Codex CLI/app-server still owns authentication
+- session/thread reuse is disabled by default and requires an explicit bounded client session id
 
 ## API compatibility target
 
@@ -41,7 +42,7 @@ The Responses API endpoint exists as a minimal text bridge, not a full OpenAI Re
 
 The default `pool` runtime avoids repeated app-server initialization while preserving stateless request semantics at the Codex thread layer. `oneshot` remains available for diagnosis and for upstream app-server regressions.
 
-The proxy deliberately does not map user sessions to persistent Codex threads yet. That may be useful later, but it has a larger safety surface because Codex is an agent and thread state can affect future turns.
+The default runtime deliberately does not map user sessions to Codex threads because Codex is an agent and thread state can affect future turns. v0.4 adds a safe opt-in mode for clients that need continuity: `CODEX_PROXY_SESSIONS=1` plus `X-Codex-Proxy-Session`. That mode is TTL-limited, LRU-bounded, keyed by model/cwd/instruction fingerprint, and never falls back to a different worker for a session turn.
 
 ## Non-goals
 
@@ -53,3 +54,4 @@ The proxy deliberately does not map user sessions to persistent Codex threads ye
 - tool call translation
 - image input/output
 - persistent Codex threads by default
+- durable session state across proxy restarts

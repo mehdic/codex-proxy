@@ -11,6 +11,7 @@ import type {
   ChatMessage,
   ResponseRequest,
   ResponseInputItem,
+  ChatCompletionTool,
 } from "../types/openai.js";
 import type { CodexSubprocessOptions } from "../subprocess/manager.js";
 
@@ -83,9 +84,10 @@ export function chatRequestToOptions(
 ): { prompt: string; options: CodexSubprocessOptions } {
   const model = resolveModel(req.model);
   const { prompt, systemInstruction } = chatMessagesToPrompt(req.messages);
+  const finalPrompt = appendStructuredOutputInstruction(prompt, req);
 
   return {
-    prompt,
+    prompt: finalPrompt,
     options: {
       model,
       instructions: systemInstruction || defaults?.instructions,
@@ -117,7 +119,7 @@ export function responsesRequestToOptions(
   }
 
   return {
-    prompt,
+    prompt: appendStructuredOutputInstruction(prompt, req),
     options: {
       model,
       instructions: req.instructions || defaults?.instructions,
@@ -157,10 +159,72 @@ function responsesInputToPrompt(items: ResponseInputItem[]): string {
   return parts.join("\n");
 }
 
+export function requestedFunctionTool(req: Pick<ChatCompletionRequest, "tools" | "tool_choice">): ChatCompletionTool | null {
+  const tools = (req.tools || []).filter((tool) => tool.type === "function" && tool.function?.name);
+  if (tools.length === 0) return null;
+
+  const choice = req.tool_choice;
+  if (choice && typeof choice === "object" && choice.type === "function") {
+    return tools.find((tool) => tool.function.name === choice.function.name) || null;
+  }
+
+  if (choice === "none") return null;
+  if (choice === "required" || choice === "auto" || choice === undefined) return tools[0];
+  return null;
+}
+
+function appendStructuredOutputInstruction(
+  prompt: string,
+  req: Pick<ChatCompletionRequest, "tools" | "tool_choice" | "response_format">,
+): string {
+  const tool = requestedFunctionTool(req);
+  if (tool) {
+    const schema = JSON.stringify(tool.function.parameters || { type: "object" });
+    return `${prompt}
+
+<codex_proxy_structured_output>
+You must satisfy an OpenAI function/tool call request.
+Return ONLY a valid JSON object for function ${JSON.stringify(tool.function.name)}.
+Do not include markdown, prose, code fences, or any text outside the JSON object.
+The JSON object must conform to this JSON Schema:
+${schema}
+</codex_proxy_structured_output>`;
+  }
+
+  if (req.response_format?.type === "json_object") {
+    return `${prompt}
+
+<codex_proxy_structured_output>
+Return ONLY a valid JSON object. Do not include markdown, prose, code fences, or any text outside the JSON object.
+</codex_proxy_structured_output>`;
+  }
+
+  if (req.response_format?.type === "json_schema") {
+    const schema = JSON.stringify(req.response_format.json_schema?.schema || { type: "object" });
+    return `${prompt}
+
+<codex_proxy_structured_output>
+Return ONLY a valid JSON object. Do not include markdown, prose, code fences, or any text outside the JSON object.
+The JSON object must conform to this JSON Schema:
+${schema}
+</codex_proxy_structured_output>`;
+  }
+
+  return prompt;
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function extractMessageText(msg: ChatMessage): string {
   if (typeof msg.content === "string") return msg.content;
+  if (!msg.content) {
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      return msg.tool_calls
+        .map((call) => `<tool_call name="${call.function.name}">${call.function.arguments}</tool_call>`)
+        .join("\n");
+    }
+    return "";
+  }
   return msg.content
     .filter((p) => p.type === "text" && p.text)
     .map((p) => p.text!)

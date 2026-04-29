@@ -10,9 +10,11 @@ import {
   chatRequestToOptions,
   responsesRequestToOptions,
   canonicalModelLabel,
+  requestedFunctionTool,
 } from "../adapter/openai-to-codex.js";
 import {
   turnResultToChatCompletion,
+  turnResultToToolCallChatCompletion,
   makeChatCompletionChunk,
   chunkToSSE,
   SSE_DONE,
@@ -22,8 +24,9 @@ import {
 } from "../adapter/codex-to-openai.js";
 import { CodexSubprocess, type CodexSubprocessOptions, type DeltaCallback, type TurnResult } from "../subprocess/manager.js";
 import { GLOBAL_CODEX_POOL, type PoolLease } from "../subprocess/pool.js";
+import { GLOBAL_CODEX_SESSIONS } from "../subprocess/session-pool.js";
 import { isPoolTransportFault } from "../subprocess/fallback.js";
-import { resolveRuntime, type RuntimeMode } from "../subprocess/runtime.js";
+import { resolveRuntime, resolveSessionRequest, type RuntimeMode } from "../subprocess/runtime.js";
 import { startSseKeepalive } from "./keepalive.js";
 import { incCounter, observeHistogram, recordFallback, recordRequest, renderMetrics } from "./metrics.js";
 import { CONFIG } from "./config.js";
@@ -125,6 +128,12 @@ export function createRouter(): Router {
 
     const model = resolveModel(body.model);
     const label = canonicalModelLabel(model);
+    const session = resolveSessionRequest(req, CONFIG);
+    if (session.kind === "invalid") {
+      incCounter("codex_proxy_errors_total", { endpoint: "chat_completions", model: label });
+      res.status(400).json(invalidRequestError(session.message, "X-Codex-Proxy-Session"));
+      return;
+    }
 
     const { prompt, options } = chatRequestToOptions(body, {
       timeoutMs: CONFIG.defaultTimeoutMs,
@@ -159,7 +168,7 @@ export function createRouter(): Router {
             const chunk = makeChatCompletionChunk(streamId, model, delta);
             res.write(chunkToSSE(chunk));
             lastStreamWrite = Date.now();
-          }, false, abortController.signal);
+          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined);
         } finally {
           if (keepalive) clearInterval(keepalive);
         }
@@ -176,8 +185,20 @@ export function createRouter(): Router {
           observeHistogram("codex_proxy_turn_duration_ms", result.durationMs, { model: label });
         }
       } else {
-        const result = await runTurn(prompt, options, runtime, "chat_completions", undefined, true, abortController.signal);
-        const response = turnResultToChatCompletion(result, model);
+        const result = await runTurn(
+          prompt,
+          options,
+          runtime,
+          "chat_completions",
+          undefined,
+          true,
+          abortController.signal,
+          session.kind === "session" ? session.sessionId : undefined,
+        );
+        const requestedTool = requestedFunctionTool(body);
+        const response = requestedTool
+          ? turnResultToToolCallChatCompletion(result, model, requestedTool.function.name)
+          : turnResultToChatCompletion(result, model);
         status = "ok";
         res.json(response);
 
@@ -216,6 +237,12 @@ export function createRouter(): Router {
 
     const model = resolveModel(body.model);
     const label = canonicalModelLabel(model);
+    const session = resolveSessionRequest(req, CONFIG);
+    if (session.kind === "invalid") {
+      incCounter("codex_proxy_errors_total", { endpoint: "responses", model: label });
+      res.status(400).json(invalidRequestError(session.message, "X-Codex-Proxy-Session"));
+      return;
+    }
 
     const { prompt, options } = responsesRequestToOptions(body, {
       timeoutMs: CONFIG.defaultTimeoutMs,
@@ -279,7 +306,7 @@ export function createRouter(): Router {
               output_index: 0, content_index: 0, delta,
             }));
             lastStreamWrite = Date.now();
-          }, false, abortController.signal);
+          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined);
         } finally {
           if (keepalive) clearInterval(keepalive);
         }
@@ -319,7 +346,16 @@ export function createRouter(): Router {
           observeHistogram("codex_proxy_turn_duration_ms", result.durationMs, { model: label });
         }
       } else {
-        const result = await runTurn(prompt, options, runtime, "responses", undefined, true, abortController.signal);
+        const result = await runTurn(
+          prompt,
+          options,
+          runtime,
+          "responses",
+          undefined,
+          true,
+          abortController.signal,
+          session.kind === "session" ? session.sessionId : undefined,
+        );
         const response = turnResultToResponseObject(result, model);
         status = "ok";
         res.json(response);
@@ -354,7 +390,12 @@ async function runTurn(
   deltaCallback?: DeltaCallback,
   allowFallback = true,
   signal?: AbortSignal,
+  sessionId?: string,
 ): Promise<TurnResult> {
+  if (sessionId) {
+    return runTurnOnce(prompt, options, runtime, deltaCallback, signal, sessionId);
+  }
+
   try {
     return await runTurnOnce(prompt, options, runtime, deltaCallback, signal);
   } catch (err) {
@@ -378,7 +419,13 @@ async function runTurnOnce(
   runtime: RuntimeMode,
   deltaCallback?: DeltaCallback,
   signal?: AbortSignal,
+  sessionId?: string,
 ): Promise<TurnResult> {
+  if (sessionId) {
+    const turn = GLOBAL_CODEX_SESSIONS.runTurn(sessionId, prompt, options, deltaCallback);
+    return await withAbort(turn, signal, () => GLOBAL_CODEX_SESSIONS.abortSession(sessionId, options));
+  }
+
   if (runtime === "oneshot") {
     const subprocess = new CodexSubprocess();
     try {

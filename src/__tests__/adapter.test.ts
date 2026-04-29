@@ -7,6 +7,7 @@ import {
   makeResponseStreamEvent,
   makeResponseTextDoneEvent,
   turnResultToChatCompletion,
+  turnResultToToolCallChatCompletion,
   turnResultToResponseObject,
   chunkToSSE,
 } from "../adapter/codex-to-openai.js";
@@ -131,4 +132,58 @@ test("makeResponseTextDoneEvent emits Responses-compatible aliases", () => {
   assert.match(event, /^event: response\.output_text\.done\n/);
   assert.match(event, /"text":"OK"/);
   assert.match(event, /"delta":"OK"/);
+});
+
+test("turnResultToResponseObject includes Responses API token fields even without Codex usage", () => {
+  const turn: TurnResult = {
+    text: "OK",
+    turnId: "turn_no_usage",
+    threadId: "thread_1",
+    usage: null,
+    durationMs: 10,
+    finishReason: "stop",
+  };
+  const response = turnResultToResponseObject(turn, "gpt-5.4-mini");
+  assert.equal(response.usage?.input_tokens, 0);
+  assert.equal(response.usage?.output_tokens, 0);
+  assert.equal(response.usage?.total_tokens, 0);
+});
+
+test("chatRequestToOptions adds structured tool JSON instruction", () => {
+  const { prompt } = chatRequestToOptions({
+    model: "gpt-5.4-mini",
+    messages: [{ role: "user", content: "Decide" }],
+    tools: [{
+      type: "function",
+      function: {
+        name: "Decision",
+        parameters: {
+          type: "object",
+          properties: { rating: { type: "string" } },
+          required: ["rating"],
+        },
+      },
+    }],
+    tool_choice: { type: "function", function: { name: "Decision" } },
+  });
+  assert.match(prompt, /Return ONLY a valid JSON object/);
+  assert.match(prompt, /Decision/);
+  assert.match(prompt, /rating/);
+});
+
+
+test("turnResultToToolCallChatCompletion wraps JSON as OpenAI tool_calls", () => {
+  const turn: TurnResult = {
+    text: "```json\n{\"rating\":\"Overweight\"}\n```",
+    turnId: "turn_tool",
+    threadId: "thread_1",
+    usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8, cachedInputTokens: 0, reasoningOutputTokens: 0 },
+    durationMs: 10,
+    finishReason: "stop",
+  };
+  const response = turnResultToToolCallChatCompletion(turn, "gpt-5.4-mini", "Decision");
+  assert.equal(response.choices[0].finish_reason, "tool_calls");
+  assert.equal(response.choices[0].message.content, null);
+  assert.equal(response.choices[0].message.tool_calls?.[0].function.name, "Decision");
+  assert.deepEqual(JSON.parse(response.choices[0].message.tool_calls?.[0].function.arguments || "{}"), { rating: "Overweight" });
 });

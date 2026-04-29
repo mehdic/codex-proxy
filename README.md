@@ -21,7 +21,7 @@ This follows the same philosophy as [`claude-proxy`](https://github.com/mehdic/c
 
 ## Status
 
-v0.3 local proxy. Working locally with:
+v0.4 local proxy. Working locally with:
 
 - non-streaming `/v1/chat/completions`
 - streaming `/v1/chat/completions`
@@ -34,6 +34,7 @@ v0.3 local proxy. Working locally with:
 - `/metrics`
 - app-server stdio transport
 - pooled persistent `codex app-server` workers with one ephemeral thread per request
+- opt-in, TTL-limited Codex session/thread pooling
 - one-shot fallback mode
 - SSE keepalive comments for streaming clients
 - env-gated localhost CORS
@@ -101,6 +102,25 @@ Pool controls:
 - `CODEX_PROXY_PREWARM_MODELS` default `gpt-5.5,gpt-5.4-mini`: models to prewarm at startup.
 - `CODEX_PROXY_INIT_POOL=0`: disables startup prewarm.
 - `CODEX_PROXY_FALLBACK_ON_POOL_FAILURE=0`: disables retrying eligible pool transport failures with one-shot before any HTTP response is committed.
+
+## Opt-in sessions
+
+Default behavior is stateless at the Codex thread layer. A client gets Codex thread reuse only when both conditions are true:
+
+1. The server is started with `CODEX_PROXY_SESSIONS=1`.
+2. The request includes `X-Codex-Proxy-Session: <id>`.
+
+Session ids must match `[A-Za-z0-9._:-]` and be at most 128 characters. Invalid explicit session headers return a 400 OpenAI-style `invalid_request_error`.
+
+When enabled and requested, the proxy keeps one initialized `codex app-server --listen stdio://` worker and one Codex thread for sequential requests with the same session id, model, cwd hash, and instruction/config fingerprint. Concurrent requests for the same session are serialized. Sessions are evicted by TTL and LRU, and their app-server worker is killed on eviction, client abort, or turn failure. Session requests do not fallback to another worker because that would break thread continuity.
+
+Session controls:
+
+- `CODEX_PROXY_SESSIONS=1`: enables explicit session pooling. Default `0`.
+- `CODEX_PROXY_SESSION_TTL_MS` default `600000`: idle session TTL.
+- `CODEX_PROXY_SESSION_MAX` default `32`: maximum active session/thread workers.
+
+Session ids are never used as metric labels. Prompts, raw instructions, and raw cwd values are not used in logs, metrics labels, or pool/session keys.
 
 Streaming responses send SSE comment keepalives (`:ok\n\n`) when idle. Configure with `CODEX_PROXY_KEEPALIVE_MS`, default `10000`; set `0` to disable. Comments do not create OpenAI data events and are intended only to keep compatible clients and intermediaries from timing out.
 
@@ -186,6 +206,9 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 | `CODEX_PROXY_INIT_POOL` | enabled | Set `0` to disable startup prewarm |
 | `CODEX_PROXY_FALLBACK_ON_POOL_FAILURE` | enabled | Set `0` to disable pool-to-oneshot retry before response commit |
 | `CODEX_PROXY_KEEPALIVE_MS` | `10000` | SSE comment keepalive interval; `0` disables |
+| `CODEX_PROXY_SESSIONS` | `0` | Set `1` to enable explicit `X-Codex-Proxy-Session` thread reuse |
+| `CODEX_PROXY_SESSION_TTL_MS` | `600000` | Idle opt-in session TTL |
+| `CODEX_PROXY_SESSION_MAX` | `32` | Maximum active opt-in sessions |
 | `CODEX_PROXY_CODEX_BIN` | `codex` | Codex binary path |
 | `CODEX_PROXY_HEALTH_MODEL` | default model | Model for `/healthz/deep` |
 | `CODEX_PROXY_HEALTH_TIMEOUT_MS` | `30000` | Deep health timeout |
@@ -204,7 +227,7 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 - Binds to localhost by default.
 - Does **not** read, store, print, or copy Codex OAuth tokens.
 - Delegates auth/session refresh to the official Codex CLI/app-server.
-- Uses a fresh ephemeral Codex thread per request. In `pool` runtime, only the initialized app-server process is reused.
+- Uses a fresh ephemeral Codex thread per request unless `CODEX_PROXY_SESSIONS=1` and a valid `X-Codex-Proxy-Session` header is present.
 - Requests are run with conservative app-server parameters (`approvalPolicy: never`, `sandbox: read-only`) where supported.
 
 Important caveat: Codex is an agent, not merely a text model. Keep this service private and localhost-only unless you add your own authentication, authorization, and sandbox policy review.
@@ -226,8 +249,7 @@ npm run smoke
 ## Roadmap
 
 - Better `/v1/responses` compatibility for additional content parts and event aliases.
-- Optional safe session mapping once Codex thread lifecycle behavior is better understood.
-- More schema-drift fixtures for Codex app-server notifications.
+- More schema-drift fixtures for Codex app-server notifications and session thread reuse.
 - Expanded operational docs for launchd, systemd, and client integrations.
 - Optional local auth layer for non-loopback deployments.
 
@@ -235,7 +257,7 @@ npm run smoke
 
 - Codex app-server is JSON-RPC and agent-oriented; this proxy maps it into OpenAI-ish response shapes.
 - `/v1/responses` is still minimal and text-only.
-- Tool calls, images, approvals, and persistent sessions are not implemented yet.
+- Tool calls, images, approvals, and durable cross-process sessions are not implemented yet.
 - The proxy uses stdio transport. Codex WebSocket transport is documented as experimental/unsupported, so it is intentionally avoided.
 
 ## License

@@ -4,10 +4,12 @@ import {
   recordFallback,
   recordPoolEvent,
   recordRequest,
+  recordSessionEvent,
   recordSubprocessExit,
   renderMetrics,
   resetMetrics,
   setPoolSize,
+  setSessionCount,
 } from "../server/metrics.js";
 
 test("metrics keep user-controlled labels bounded", () => {
@@ -57,4 +59,25 @@ test("metrics render pool counters and gauges with bounded labels", () => {
   assert.match(rendered, /codex_proxy_pool_events_total\{event="lru_eviction"\} 1/);
   assert.match(rendered, /codex_proxy_fallbacks_total\{reason="pool_failure"\} 1/);
   assert.match(rendered, /codex_proxy_pool_size 3/);
+});
+
+test("metrics render bounded session counters and never expose session ids", () => {
+  resetMetrics();
+  recordSessionEvent("hit");
+  recordSessionEvent("miss");
+  recordSessionEvent("created");
+  recordSessionEvent("evicted");
+  recordSessionEvent("expired");
+  recordSessionEvent("rejected");
+  setSessionCount(2);
+
+  const rendered = renderMetrics();
+  assert.match(rendered, /codex_proxy_sessions_total\{event="hit"\} 1/);
+  assert.match(rendered, /codex_proxy_sessions_total\{event="miss"\} 1/);
+  assert.match(rendered, /codex_proxy_sessions_total\{event="created"\} 1/);
+  assert.match(rendered, /codex_proxy_sessions_total\{event="evicted"\} 1/);
+  assert.match(rendered, /codex_proxy_sessions_total\{event="expired"\} 1/);
+  assert.match(rendered, /codex_proxy_sessions_total\{event="rejected"\} 1/);
+  assert.match(rendered, /codex_proxy_active_sessions 2/);
+  assert.doesNotMatch(rendered, /client-a/);
 });

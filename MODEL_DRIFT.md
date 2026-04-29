@@ -13,6 +13,7 @@ Codex app-server is not a stable public OpenAI API. It is a JSON-RPC interface o
 - token usage field names
 - error payload shape and retry behavior
 - app-server behavior when one initialized stdio process handles multiple ephemeral threads over time
+- app-server behavior when multiple `turn/start` calls reuse one thread id for opt-in sessions
 
 The proxy intentionally uses stdio app-server transport:
 
@@ -60,6 +61,7 @@ Then manually verify:
 - streaming `/v1/responses` emits `response.created`, text delta events, and `response.completed`.
 - errors remain OpenAI-style and do not include secrets.
 - in `pool` runtime, repeated requests reuse app-server workers without reusing Codex threads.
+- with `CODEX_PROXY_SESSIONS=1`, two sequential requests with the same valid `X-Codex-Proxy-Session` succeed and `/metrics` does not expose the session id.
 - in `oneshot` runtime, a request still succeeds with a fresh app-server process.
 
 If a live smoke fails because of quota or Codex auth, verify the CLI directly:

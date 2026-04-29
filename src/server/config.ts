@@ -17,6 +17,9 @@ export interface ProxyConfig {
   initPool: boolean;
   fallbackOnPoolFailure: boolean;
   keepaliveMs: number;
+  sessionsEnabled: boolean;
+  sessionTtlMs: number;
+  sessionMax: number;
   debug: boolean;
   stderrMaxBytes: number;
   cors: boolean;
@@ -45,6 +48,9 @@ export function parseConfig(env: Env = process.env): ProxyConfig {
     initPool: env.CODEX_PROXY_INIT_POOL !== "0",
     fallbackOnPoolFailure: env.CODEX_PROXY_FALLBACK_ON_POOL_FAILURE !== "0",
     keepaliveMs: parseNonNegativeInt(env.CODEX_PROXY_KEEPALIVE_MS, 10_000),
+    sessionsEnabled: env.CODEX_PROXY_SESSIONS === "1",
+    sessionTtlMs: parsePositiveInt(env.CODEX_PROXY_SESSION_TTL_MS, 600_000),
+    sessionMax: parsePositiveInt(env.CODEX_PROXY_SESSION_MAX, 32),
     debug: env.CODEX_PROXY_DEBUG === "1" || env.DEBUG === "1" || env.DEBUG === "true",
     stderrMaxBytes: parsePositiveInt(env.CODEX_PROXY_STDERR_MAX_BYTES, 16_384),
     cors: env.CODEX_PROXY_CORS === "1",

@@ -16,6 +16,9 @@ test("parseConfig applies safe defaults", () => {
   assert.equal(cfg.initPool, true);
   assert.equal(cfg.fallbackOnPoolFailure, true);
   assert.equal(cfg.keepaliveMs, 10_000);
+  assert.equal(cfg.sessionsEnabled, false);
+  assert.equal(cfg.sessionTtlMs, 600_000);
+  assert.equal(cfg.sessionMax, 32);
   assert.equal(cfg.debug, false);
   assert.equal(cfg.cors, false);
 });
@@ -35,6 +38,9 @@ test("parseConfig reads env overrides and clamps invalid numbers", () => {
     CODEX_PROXY_INIT_POOL: "0",
     CODEX_PROXY_FALLBACK_ON_POOL_FAILURE: "0",
     CODEX_PROXY_KEEPALIVE_MS: "0",
+    CODEX_PROXY_SESSIONS: "1",
+    CODEX_PROXY_SESSION_TTL_MS: "12345",
+    CODEX_PROXY_SESSION_MAX: "7",
     CODEX_PROXY_DEBUG: "1",
     CODEX_PROXY_CORS: "1",
   });
@@ -52,6 +58,9 @@ test("parseConfig reads env overrides and clamps invalid numbers", () => {
   assert.equal(cfg.initPool, false);
   assert.equal(cfg.fallbackOnPoolFailure, false);
   assert.equal(cfg.keepaliveMs, 0);
+  assert.equal(cfg.sessionsEnabled, true);
+  assert.equal(cfg.sessionTtlMs, 12345);
+  assert.equal(cfg.sessionMax, 7);
   assert.equal(cfg.debug, true);
   assert.equal(cfg.cors, true);
 });

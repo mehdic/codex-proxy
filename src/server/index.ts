@@ -5,6 +5,7 @@ import { CONFIG, parseConfig } from "./config.js";
 import { createRouter } from "./routes.js";
 import { invalidRequestError } from "./errors.js";
 import { drainGlobalPool, prewarmGlobalPool } from "../subprocess/pool.js";
+import { drainGlobalSessions } from "../subprocess/session-pool.js";
 
 export interface ServerOptions {
   host?: string;
@@ -23,7 +24,7 @@ export function createApp(options: Pick<ServerOptions, "maxBodySize"> = {}): Exp
       if (origin && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(origin)) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Vary", "Origin");
-        res.setHeader("Access-Control-Allow-Headers", "content-type, authorization, x-request-id");
+        res.setHeader("Access-Control-Allow-Headers", "content-type, authorization, x-request-id, x-codex-proxy-session");
         res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
       }
       if (req.method === "OPTIONS") {
@@ -77,6 +78,7 @@ export async function stopServer(graceMs = CONFIG.shutdownGraceMs): Promise<void
   const server = serverInstance;
   serverInstance = null;
   drainGlobalPool();
+  drainGlobalSessions();
 
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {

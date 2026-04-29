@@ -13,6 +13,7 @@ type RuntimeLabel = "pool" | "oneshot";
 type ExitReason = "clean" | "signal" | "error" | "timeout" | "killed" | "unknown";
 type PoolEvent = "warm_hit" | "cold_spawn" | "ttl_eviction" | "lru_eviction" | "stale_eviction" | "prewarm_error";
 type FallbackReason = "pool_failure";
+type SessionEvent = "hit" | "miss" | "created" | "evicted" | "expired" | "rejected";
 
 interface RequestRecord {
   endpoint: string;
@@ -43,7 +44,16 @@ const poolEvents: Record<PoolEvent, number> = {
 const fallbacks: Record<FallbackReason, number> = {
   pool_failure: 0,
 };
+const sessionEvents: Record<SessionEvent, number> = {
+  hit: 0,
+  miss: 0,
+  created: 0,
+  evicted: 0,
+  expired: 0,
+  rejected: 0,
+};
 let poolSize = 0;
+let activeSessions = 0;
 const subprocessExits: Record<ExitReason, number> = {
   clean: 0,
   signal: 0,
@@ -105,8 +115,17 @@ export function recordFallback(reason: string): void {
   fallbacks[label]++;
 }
 
+export function recordSessionEvent(event: string): void {
+  const label = canonicalSessionEvent(event);
+  sessionEvents[label]++;
+}
+
 export function setPoolSize(size: number): void {
   poolSize = Math.max(0, Math.floor(size));
+}
+
+export function setSessionCount(size: number): void {
+  activeSessions = Math.max(0, Math.floor(size));
 }
 
 function sanitizeLabels(labels?: Record<string, string>): Record<string, string> | undefined {
@@ -146,6 +165,20 @@ function canonicalPoolEvent(event: string): PoolEvent {
 
 function canonicalFallbackReason(reason: string): FallbackReason {
   return reason === "pool_failure" ? "pool_failure" : "pool_failure";
+}
+
+function canonicalSessionEvent(event: string): SessionEvent {
+  switch (event) {
+    case "hit":
+    case "miss":
+    case "created":
+    case "evicted":
+    case "expired":
+    case "rejected":
+      return event;
+    default:
+      return "rejected";
+  }
 }
 
 function canonicalExitReason(reason: string): ExitReason {
@@ -242,6 +275,16 @@ export function renderMetrics(): string {
   lines.push("# TYPE codex_proxy_pool_size gauge");
   lines.push(`codex_proxy_pool_size ${poolSize}`);
 
+  lines.push("# HELP codex_proxy_sessions_total Session pool lifecycle events");
+  lines.push("# TYPE codex_proxy_sessions_total counter");
+  for (const [event, count] of Object.entries(sessionEvents)) {
+    lines.push(`codex_proxy_sessions_total{event="${event}"} ${count}`);
+  }
+
+  lines.push("# HELP codex_proxy_active_sessions Current active Codex session count");
+  lines.push("# TYPE codex_proxy_active_sessions gauge");
+  lines.push(`codex_proxy_active_sessions ${activeSessions}`);
+
   lines.push("# HELP codex_proxy_uptime_seconds Proxy uptime in seconds");
   lines.push("# TYPE codex_proxy_uptime_seconds gauge");
   lines.push(`codex_proxy_uptime_seconds ${Math.floor(process.uptime())}`);
@@ -257,6 +300,8 @@ export function resetMetrics(): void {
   requestRecords.clear();
   for (const key of Object.keys(poolEvents) as PoolEvent[]) poolEvents[key] = 0;
   for (const key of Object.keys(fallbacks) as FallbackReason[]) fallbacks[key] = 0;
+  for (const key of Object.keys(sessionEvents) as SessionEvent[]) sessionEvents[key] = 0;
   poolSize = 0;
+  activeSessions = 0;
   for (const key of Object.keys(subprocessExits) as ExitReason[]) subprocessExits[key] = 0;
 }
