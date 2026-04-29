@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chatMessagesToPrompt, chatRequestToOptions, responsesRequestToOptions } from "../adapter/openai-to-codex.js";
+import { chatMessagesToPrompt, chatRequestToOptions, requestedFunctionTool, responsesRequestToOptions } from "../adapter/openai-to-codex.js";
 import {
   appendAssistantText,
   extractDeltaText,
@@ -149,7 +149,7 @@ test("turnResultToResponseObject includes Responses API token fields even withou
   assert.equal(response.usage?.total_tokens, 0);
 });
 
-test("chatRequestToOptions adds structured tool JSON instruction", () => {
+test("chatRequestToOptions adds structured tool JSON instruction for explicit tool choice", () => {
   const { prompt } = chatRequestToOptions({
     model: "gpt-5.4-mini",
     messages: [{ role: "user", content: "Decide" }],
@@ -169,6 +169,19 @@ test("chatRequestToOptions adds structured tool JSON instruction", () => {
   assert.match(prompt, /Return ONLY a valid JSON object/);
   assert.match(prompt, /Decision/);
   assert.match(prompt, /rating/);
+});
+
+test("requestedFunctionTool does not force tool calls for auto or omitted tool_choice", () => {
+  const req = {
+    tools: [{
+      type: "function" as const,
+      function: { name: "Decision", parameters: { type: "object" } },
+    }],
+  };
+  assert.equal(requestedFunctionTool(req), null);
+  assert.equal(requestedFunctionTool({ ...req, tool_choice: "auto" }), null);
+  assert.equal(requestedFunctionTool({ ...req, tool_choice: "none" }), null);
+  assert.equal(requestedFunctionTool({ ...req, tool_choice: "required" })?.function.name, "Decision");
 });
 
 

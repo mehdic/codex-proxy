@@ -168,8 +168,10 @@ export function requestedFunctionTool(req: Pick<ChatCompletionRequest, "tools" |
     return tools.find((tool) => tool.function.name === choice.function.name) || null;
   }
 
-  if (choice === "none") return null;
-  if (choice === "required" || choice === "auto" || choice === undefined) return tools[0];
+  if (choice === "required") return tools[0];
+  // For ordinary tool-enabled agent loops, OpenAI clients often omit tool_choice
+  // or set auto. Do not force a tool call in that case; Codex has no native
+  // tool execution bridge yet, and forcing the first tool can create loops.
   return null;
 }
 
