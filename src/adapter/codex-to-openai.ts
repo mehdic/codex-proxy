@@ -20,13 +20,14 @@ import type { TokenUsageBreakdown } from "../types/codex.js";
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function codexUsageToOpenAI(usage: TokenUsageBreakdown | null): TokenUsage {
-  if (!usage) {
-    return { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  }
+  const input = usage?.inputTokens ?? 0;
+  const output = usage?.outputTokens ?? 0;
   return {
-    prompt_tokens: usage.inputTokens ?? 0,
-    completion_tokens: usage.outputTokens ?? 0,
-    total_tokens: usage.totalTokens ?? ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)),
+    prompt_tokens: input,
+    completion_tokens: output,
+    total_tokens: usage?.totalTokens ?? input + output,
+    prompt_tokens_details: { cached_tokens: usage?.cachedInputTokens ?? 0 },
+    completion_tokens_details: { reasoning_tokens: usage?.reasoningOutputTokens ?? 0 },
   };
 }
 

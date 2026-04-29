@@ -146,6 +146,15 @@ The smoke script uses localhost only and checks `/health`, `/v1/models`, one non
 
 Use `/health` for frequent process checks. Use `/healthz/deep` for readiness diagnostics because it starts `codex app-server` and consumes a small live turn.
 
+## Usage metadata
+
+Codex app-server reports latest-turn usage through official `thread/tokenUsage/updated` notifications. The proxy maps those values into OpenAI-compatible fields:
+
+- Chat Completions: `prompt_tokens`, `completion_tokens`, `total_tokens`, `prompt_tokens_details.cached_tokens`, and `completion_tokens_details.reasoning_tokens`.
+- Responses: `input_tokens`, `output_tokens`, `total_tokens`, `input_tokens_details.cached_tokens`, and `output_tokens_details.reasoning_tokens`.
+
+Codex does not currently expose Claude-style prompt cache creation/write token counts through app-server, so `cacheWrite`-style accounting is not available here.
+
 ## Models
 
 The proxy passes model names to Codex app-server. Current default is `gpt-5.5`.

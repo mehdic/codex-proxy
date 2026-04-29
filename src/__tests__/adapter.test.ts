@@ -78,19 +78,23 @@ test("appendAssistantText suppresses duplicate completed agent message text", ()
   assert.equal(appendAssistantText("HELLO", " world"), "HELLO world");
 });
 
-test("turnResultToChatCompletion returns OpenAI-compatible response", () => {
+test("turnResultToChatCompletion returns OpenAI-compatible response with token details", () => {
   const turn: TurnResult = {
     text: "OK",
     turnId: "turn_1",
     threadId: "thread_1",
-    usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3, cachedInputTokens: 0, reasoningOutputTokens: 0 },
+    usage: { inputTokens: 8, outputTokens: 3, totalTokens: 11, cachedInputTokens: 5, reasoningOutputTokens: 2 },
     durationMs: 10,
     finishReason: "stop",
   };
   const response = turnResultToChatCompletion(turn, "gpt-5.5");
   assert.equal(response.object, "chat.completion");
   assert.equal(response.choices[0].message.content, "OK");
-  assert.equal(response.usage?.total_tokens, 3);
+  assert.equal(response.usage?.prompt_tokens, 8);
+  assert.equal(response.usage?.completion_tokens, 3);
+  assert.equal(response.usage?.total_tokens, 11);
+  assert.equal(response.usage?.prompt_tokens_details?.cached_tokens, 5);
+  assert.equal(response.usage?.completion_tokens_details?.reasoning_tokens, 2);
 });
 
 test("turnResultToResponseObject includes output_text and output_text convenience field", () => {
@@ -149,6 +153,23 @@ test("turnResultToResponseObject includes Responses API token fields even withou
   assert.equal(response.usage?.total_tokens, 0);
 });
 
+test("turnResultToChatCompletion includes token detail fields even without Codex usage", () => {
+  const turn: TurnResult = {
+    text: "OK",
+    turnId: "turn_no_usage",
+    threadId: "thread_1",
+    usage: null,
+    durationMs: 10,
+    finishReason: "stop",
+  };
+  const response = turnResultToChatCompletion(turn, "gpt-5.4-mini");
+  assert.equal(response.usage?.prompt_tokens, 0);
+  assert.equal(response.usage?.completion_tokens, 0);
+  assert.equal(response.usage?.total_tokens, 0);
+  assert.equal(response.usage?.prompt_tokens_details?.cached_tokens, 0);
+  assert.equal(response.usage?.completion_tokens_details?.reasoning_tokens, 0);
+});
+
 test("chatRequestToOptions adds structured tool JSON instruction for explicit tool choice", () => {
   const { prompt } = chatRequestToOptions({
     model: "gpt-5.4-mini",
@@ -190,7 +211,7 @@ test("turnResultToToolCallChatCompletion wraps JSON as OpenAI tool_calls", () =>
     text: "```json\n{\"rating\":\"Overweight\"}\n```",
     turnId: "turn_tool",
     threadId: "thread_1",
-    usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8, cachedInputTokens: 0, reasoningOutputTokens: 0 },
+    usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8, cachedInputTokens: 4, reasoningOutputTokens: 2 },
     durationMs: 10,
     finishReason: "stop",
   };
@@ -199,4 +220,6 @@ test("turnResultToToolCallChatCompletion wraps JSON as OpenAI tool_calls", () =>
   assert.equal(response.choices[0].message.content, null);
   assert.equal(response.choices[0].message.tool_calls?.[0].function.name, "Decision");
   assert.deepEqual(JSON.parse(response.choices[0].message.tool_calls?.[0].function.arguments || "{}"), { rating: "Overweight" });
+  assert.equal(response.usage?.prompt_tokens_details?.cached_tokens, 4);
+  assert.equal(response.usage?.completion_tokens_details?.reasoning_tokens, 2);
 });

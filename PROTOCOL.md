@@ -70,6 +70,28 @@ Streaming emits minimal Responses-style event names:
 
 `response.completed` reuses the same response id emitted by `response.created`. Text-only streams include both `text` and a compatibility `delta` alias on `response.output_text.done`.
 
+## Usage and cache signals
+
+Codex app-server emits official token usage updates through `thread/tokenUsage/updated`. The proxy maps the latest turn usage into OpenAI-compatible response fields.
+
+For Chat Completions, `usage` includes:
+
+- `prompt_tokens`
+- `completion_tokens`
+- `total_tokens`
+- `prompt_tokens_details.cached_tokens` from Codex `cachedInputTokens`
+- `completion_tokens_details.reasoning_tokens` from Codex `reasoningOutputTokens`
+
+For Responses, `usage` includes:
+
+- `input_tokens`
+- `output_tokens`
+- `total_tokens`
+- `input_tokens_details.cached_tokens` from Codex `cachedInputTokens`
+- `output_tokens_details.reasoning_tokens` from Codex `reasoningOutputTokens`
+
+Codex currently does not expose Claude-style prompt cache creation/write token counts through app-server. Treat cached and reasoning token details as upstream-reported accounting, not independently verified billing data.
+
 ## Transport
 
 Only stdio is used. Codex WebSocket app-server transport is intentionally avoided because upstream documents it as experimental/unsupported.
