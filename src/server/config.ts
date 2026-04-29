@@ -11,6 +11,7 @@ export interface ProxyConfig {
   shutdownGraceMs: number;
   debug: boolean;
   stderrMaxBytes: number;
+  cors: boolean;
 }
 
 type Env = Record<string, string | undefined>;
@@ -30,6 +31,7 @@ export function parseConfig(env: Env = process.env): ProxyConfig {
     shutdownGraceMs: parsePositiveInt(env.CODEX_PROXY_SHUTDOWN_GRACE_MS, 10_000),
     debug: env.CODEX_PROXY_DEBUG === "1" || env.DEBUG === "1" || env.DEBUG === "true",
     stderrMaxBytes: parsePositiveInt(env.CODEX_PROXY_STDERR_MAX_BYTES, 16_384),
+    cors: env.CODEX_PROXY_CORS === "1",
   };
 }
 

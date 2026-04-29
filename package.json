@@ -1,6 +1,6 @@
 {
   "name": "codex-proxy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenAI-compatible local HTTP API proxy for Codex app-server over stdio JSON-RPC",
   "type": "module",
   "main": "dist/server/standalone.js",
@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/server/standalone.js",
     "dev": "tsc --watch",
+    "smoke": "scripts/smoke.sh",
     "test": "node --test dist/__tests__/*.test.js",
     "pretest": "npm run build"
   },

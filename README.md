@@ -21,14 +21,19 @@ This follows the same philosophy as [`claude-proxy`](https://github.com/mehdic/c
 
 ## Status
 
-Early MVP. Working locally with:
+v0.2 local proxy. Working locally with:
 
 - non-streaming `/v1/chat/completions`
 - streaming `/v1/chat/completions`
+- minimal `/v1/responses`
+- minimal streaming `/v1/responses`
 - `/v1/models`
 - `/health`
+- `/healthz/deep`
+- `/version`
 - `/metrics`
 - app-server stdio transport
+- env-gated localhost CORS
 
 The implementation intentionally avoids the experimental Codex WebSocket transport.
 
@@ -63,31 +68,29 @@ CODEX_PROXY_PORT=3470 npm start
 node dist/server/standalone.js 3470
 ```
 
+The standalone server handles `SIGINT` and `SIGTERM` by closing the HTTP server with a configurable grace period (`CODEX_PROXY_SHUTDOWN_GRACE_MS`, default `10000`).
+
 ## Smoke tests
 
 ```bash
-curl -s http://127.0.0.1:3466/health
-curl -s http://127.0.0.1:3466/v1/models | jq
-
-curl -s -X POST http://127.0.0.1:3466/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Reply OK only."}]}'
-
-curl -N -X POST http://127.0.0.1:3466/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"Reply HI only."}]}'
+npm run smoke
 ```
+
+The smoke script uses localhost only and checks `/health`, `/v1/models`, one non-streaming chat request, and one streaming chat request. It requires a running proxy and an authenticated Codex CLI session.
 
 ## Endpoints
 
 | Endpoint | Method | Description |
 |---|---:|---|
-| `/health` | GET | Cheap liveness probe |
-| `/healthz/deep` | GET | Runs a tiny Codex turn |
+| `/health` | GET | Cheap liveness probe with version and uptime |
+| `/version` | GET | Package name and runtime version |
+| `/healthz/deep` | GET | Starts Codex and runs a tiny turn with `CODEX_PROXY_HEALTH_MODEL` or the default model |
 | `/metrics` | GET | Prometheus-style metrics |
 | `/models`, `/v1/models` | GET | OpenAI model list |
 | `/chat/completions`, `/v1/chat/completions` | POST | OpenAI chat-completions-compatible API |
 | `/responses`, `/v1/responses` | POST | Minimal OpenAI Responses-style API |
+
+Use `/health` for frequent process checks. Use `/healthz/deep` for readiness diagnostics because it starts `codex app-server` and consumes a small live turn.
 
 ## Models
 
@@ -131,6 +134,8 @@ Advertised models:
 }
 ```
 
+More detail: [docs/openclaw.md](docs/openclaw.md).
+
 ## Environment variables
 
 | Variable | Default | Effect |
@@ -142,7 +147,15 @@ Advertised models:
 | `CODEX_PROXY_CODEX_BIN` | `codex` | Codex binary path |
 | `CODEX_PROXY_HEALTH_MODEL` | default model | Model for `/healthz/deep` |
 | `CODEX_PROXY_HEALTH_TIMEOUT_MS` | `30000` | Deep health timeout |
+| `CODEX_PROXY_SHUTDOWN_GRACE_MS` | `10000` | Grace period for SIGINT/SIGTERM shutdown |
+| `CODEX_PROXY_CORS` | unset | Set `1` to allow localhost browser origins |
 | `DEBUG` | unset | Logs app-server stderr snippets for debugging |
+
+## Operational docs
+
+- [macOS LaunchAgent](docs/macos-launchagent.md)
+- [OpenClaw provider setup](docs/openclaw.md)
+- [Model and protocol drift](MODEL_DRIFT.md)
 
 ## Security model
 
@@ -162,10 +175,24 @@ npm run build
 npm test
 ```
 
+Run live smoke after starting the server:
+
+```bash
+npm run smoke
+```
+
+## v0.2 roadmap
+
+- Better `/v1/responses` compatibility for additional content parts and event aliases.
+- Optional warm worker/session mode once lifecycle and failure handling are well-tested.
+- More schema-drift fixtures for Codex app-server notifications.
+- Expanded operational docs for launchd, systemd, and client integrations.
+- Optional local auth layer for non-loopback deployments.
+
 ## Caveats
 
 - Codex app-server is JSON-RPC and agent-oriented; this proxy maps it into OpenAI-ish response shapes.
-- `/v1/responses` is minimal text-only MVP.
+- `/v1/responses` is still minimal and text-only.
 - Tool calls, images, approvals, and persistent sessions are not implemented yet.
 - The proxy uses stdio transport. Codex WebSocket transport is documented as experimental/unsupported, so it is intentionally avoided.
 

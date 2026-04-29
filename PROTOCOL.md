@@ -46,11 +46,16 @@ data: {"object":"chat.completion.chunk", ...}
 Streaming emits minimal Responses-style event names:
 
 - `response.created`
+- `response.in_progress`
 - `response.output_item.added`
+- `response.content_part.added`
 - `response.output_text.delta`
 - `response.output_text.done`
+- `response.content_part.done`
 - `response.output_item.done`
 - `response.completed`
+
+`response.completed` reuses the same response id emitted by `response.created`. Text-only streams include both `text` and a compatibility `delta` alias on `response.output_text.done`.
 
 ## Transport
 

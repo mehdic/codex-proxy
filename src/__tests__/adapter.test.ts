@@ -5,6 +5,7 @@ import {
   appendAssistantText,
   extractDeltaText,
   makeResponseStreamEvent,
+  makeResponseTextDoneEvent,
   turnResultToChatCompletion,
   turnResultToResponseObject,
   chunkToSSE,
@@ -102,4 +103,11 @@ test("makeResponseStreamEvent includes event type in data payload", () => {
   const event = makeResponseStreamEvent("response.completed", { response: { id: "resp_1" } });
   assert.match(event, /^event: response\.completed\n/);
   assert.match(event, /"type":"response\.completed"/);
+});
+
+test("makeResponseTextDoneEvent emits Responses-compatible aliases", () => {
+  const event = makeResponseTextDoneEvent(0, 0, "OK");
+  assert.match(event, /^event: response\.output_text\.done\n/);
+  assert.match(event, /"text":"OK"/);
+  assert.match(event, /"delta":"OK"/);
 });

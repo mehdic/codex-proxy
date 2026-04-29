@@ -17,6 +17,7 @@ import { appendAssistantText, extractDeltaText } from "../adapter/codex-to-opena
 import { CONFIG } from "../server/config.js";
 import { CodexProxyError } from "../server/errors.js";
 import { recordSubprocessExit } from "../server/metrics.js";
+import { VERSION } from "../server/version.js";
 import type {
   RequestId,
   InitializeResponse,
@@ -146,7 +147,7 @@ export class CodexSubprocess {
       clientInfo: {
         name: "codex-proxy",
         title: "Codex Proxy",
-        version: "0.1.0",
+        version: VERSION,
       },
       capabilities: {
         experimentalApi: false,

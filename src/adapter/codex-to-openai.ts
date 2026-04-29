@@ -144,17 +144,18 @@ export const SSE_DONE = "data: [DONE]\n\n";
 export function turnResultToResponseObject(
   result: TurnResult,
   model: string,
+  ids: { responseId?: string; outputId?: string } = {},
 ): ResponseObject {
   const outputItem: ResponseOutputItem = {
     type: "message",
-    id: `msg_${uuid()}`,
+    id: ids.outputId || `msg_${uuid()}`,
     role: "assistant",
     status: "completed",
     content: [{ type: "output_text", text: result.text }],
   };
 
   return {
-    id: `resp_${result.turnId}`,
+    id: ids.responseId || `resp_${result.turnId}`,
     object: "response",
     created_at: Math.floor(Date.now() / 1000),
     model,
@@ -171,4 +172,14 @@ export function turnResultToResponseObject(
 /** Build a Responses API streaming event. */
 export function makeResponseStreamEvent(type: string, data: Record<string, unknown>): string {
   return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+}
+
+/** Build final Responses text event with a compatibility delta alias. */
+export function makeResponseTextDoneEvent(outputIndex: number, contentIndex: number, text: string): string {
+  return makeResponseStreamEvent("response.output_text.done", {
+    output_index: outputIndex,
+    content_index: contentIndex,
+    text,
+    delta: text,
+  });
 }

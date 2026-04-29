@@ -9,6 +9,7 @@ test("parseConfig applies safe defaults", () => {
   assert.equal(cfg.defaultTimeoutMs, 120_000);
   assert.equal(cfg.shutdownGraceMs, 10_000);
   assert.equal(cfg.debug, false);
+  assert.equal(cfg.cors, false);
 });
 
 test("parseConfig reads env overrides and clamps invalid numbers", () => {
@@ -19,6 +20,7 @@ test("parseConfig reads env overrides and clamps invalid numbers", () => {
     CODEX_PROXY_TURN_START_TIMEOUT_MS: "bad",
     CODEX_PROXY_SHUTDOWN_GRACE_MS: "-1",
     CODEX_PROXY_DEBUG: "1",
+    CODEX_PROXY_CORS: "1",
   });
 
   assert.equal(cfg.host, "0.0.0.0");
@@ -27,4 +29,5 @@ test("parseConfig reads env overrides and clamps invalid numbers", () => {
   assert.equal(cfg.turnStartTimeoutMs, 10_000);
   assert.equal(cfg.shutdownGraceMs, 10_000);
   assert.equal(cfg.debug, true);
+  assert.equal(cfg.cors, true);
 });

@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { v4 as uuid } from "uuid";
 import { CONFIG, parseConfig } from "./config.js";
 import { createRouter } from "./routes.js";
+import { invalidRequestError } from "./errors.js";
 
 export interface ServerOptions {
   host?: string;
@@ -15,6 +16,22 @@ let serverInstance: Server | null = null;
 export function createApp(options: Pick<ServerOptions, "maxBodySize"> = {}): Express {
   const app = express();
   app.disable("x-powered-by");
+  if (CONFIG.cors) {
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      const origin = req.header("origin");
+      if (origin && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Headers", "content-type, authorization, x-request-id");
+        res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      }
+      if (req.method === "OPTIONS") {
+        res.status(204).end();
+        return;
+      }
+      next();
+    });
+  }
   app.use((req: Request, res: Response, next: NextFunction) => {
     const requestId = req.header("x-request-id") || uuid().replace(/-/g, "").slice(0, 24);
     res.locals.requestId = requestId;
@@ -30,7 +47,9 @@ export function createApp(options: Pick<ServerOptions, "maxBodySize"> = {}): Exp
   app.use(express.json({ limit: options.maxBodySize || CONFIG.maxBodySize }));
   app.use(createRouter());
   app.use((_req: Request, res: Response) => {
-    res.status(404).json({ error: { message: "Not found", type: "invalid_request_error", code: "not_found" } });
+    const body = invalidRequestError("Not found");
+    body.error.code = "not_found";
+    res.status(404).json(body);
   });
   return app;
 }

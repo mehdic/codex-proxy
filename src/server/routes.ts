@@ -18,11 +18,13 @@ import {
   SSE_DONE,
   turnResultToResponseObject,
   makeResponseStreamEvent,
+  makeResponseTextDoneEvent,
 } from "../adapter/codex-to-openai.js";
 import { CodexSubprocess } from "../subprocess/manager.js";
 import { incCounter, observeHistogram, recordRequest, renderMetrics } from "./metrics.js";
 import { CONFIG } from "./config.js";
-import { mapErrorToHttp } from "./errors.js";
+import { invalidRequestError, mapErrorToHttp } from "./errors.js";
+import { NAME, VERSION } from "./version.js";
 import type { ChatCompletionRequest, ResponseRequest, ModelObject, ModelListResponse } from "../types/openai.js";
 
 // ── Model list ───────────────────────────────────────────────────────
@@ -39,6 +41,14 @@ function buildModelList(): ModelListResponse {
   return { object: "list", data };
 }
 
+export function buildHealthPayload() {
+  return { status: "ok", uptime: Math.floor(process.uptime()), version: VERSION };
+}
+
+export function buildVersionPayload() {
+  return { name: NAME, version: VERSION };
+}
+
 // ── Router factory ───────────────────────────────────────────────────
 
 export function createRouter(): Router {
@@ -46,7 +56,11 @@ export function createRouter(): Router {
 
   // Health
   router.get("/health", (_req: Request, res: Response) => {
-    res.json({ status: "ok", uptime: Math.floor(process.uptime()) });
+    res.json(buildHealthPayload());
+  });
+
+  router.get("/version", (_req: Request, res: Response) => {
+    res.json(buildVersionPayload());
   });
 
   // Deep health: verifies the codex binary and app-server path with a tiny turn.
@@ -97,7 +111,7 @@ export function createRouter(): Router {
     const requestId = String(res.locals.requestId || uuid());
     let status: "ok" | "error" = "error";
     if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
-      res.status(400).json({ error: { message: "messages array is required", type: "invalid_request_error" } });
+      res.status(400).json(invalidRequestError("messages array is required", "messages"));
       return;
     }
 
@@ -178,7 +192,7 @@ export function createRouter(): Router {
     const requestId = String(res.locals.requestId || uuid());
     let status: "ok" | "error" = "error";
     if (!body.input) {
-      res.status(400).json({ error: { message: "input is required", type: "invalid_request_error" } });
+      res.status(400).json(invalidRequestError("input is required", "input"));
       return;
     }
 
@@ -213,13 +227,24 @@ export function createRouter(): Router {
 
         // response.created
         res.write(makeResponseStreamEvent("response.created", {
-          response: { id: respId, object: "response", status: "in_progress", model, output: [] },
+          response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", model, output: [] },
+        }));
+
+        res.write(makeResponseStreamEvent("response.in_progress", {
+          response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", model, output: [] },
         }));
 
         // output_item.added
         res.write(makeResponseStreamEvent("response.output_item.added", {
           output_index: 0,
           item: { type: "message", id: outputId, role: "assistant", status: "in_progress", content: [] },
+        }));
+
+        res.write(makeResponseStreamEvent("response.content_part.added", {
+          output_index: 0,
+          content_index: 0,
+          item_id: outputId,
+          part: { type: "output_text", text: "" },
         }));
 
         const result = await subprocess.submitTurnStreaming(prompt, options, (delta) => {
@@ -230,8 +255,13 @@ export function createRouter(): Router {
         status = "ok";
 
         // output_text.done
-        res.write(makeResponseStreamEvent("response.output_text.done", {
-          output_index: 0, content_index: 0, text: result.text,
+        res.write(makeResponseTextDoneEvent(0, 0, result.text));
+
+        res.write(makeResponseStreamEvent("response.content_part.done", {
+          output_index: 0,
+          content_index: 0,
+          item_id: outputId,
+          part: { type: "output_text", text: result.text },
         }));
 
         // output_item.done
@@ -245,7 +275,7 @@ export function createRouter(): Router {
 
         // response.completed
         res.write(makeResponseStreamEvent("response.completed", {
-          response: turnResultToResponseObject(result, model),
+          response: turnResultToResponseObject(result, model, { responseId: respId, outputId }),
         }));
 
         res.end();

@@ -24,7 +24,19 @@ export interface HttpErrorBody {
     message: string;
     type: "invalid_request_error" | "server_error";
     code: string;
+    param?: string | null;
     detail?: string;
+  };
+}
+
+export function invalidRequestError(message: string, param?: string): HttpErrorBody {
+  return {
+    error: {
+      message,
+      type: "invalid_request_error",
+      param: param ?? null,
+      code: param ? "missing_required_parameter" : "invalid_request",
+    },
   };
 }
 
