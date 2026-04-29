@@ -20,7 +20,9 @@ import {
   makeResponseStreamEvent,
 } from "../adapter/codex-to-openai.js";
 import { CodexSubprocess } from "../subprocess/manager.js";
-import { incCounter, observeHistogram, renderMetrics } from "./metrics.js";
+import { incCounter, observeHistogram, recordRequest, renderMetrics } from "./metrics.js";
+import { CONFIG } from "./config.js";
+import { mapErrorToHttp } from "./errors.js";
 import type { ChatCompletionRequest, ResponseRequest, ModelObject, ModelListResponse } from "../types/openai.js";
 
 // ── Model list ───────────────────────────────────────────────────────
@@ -50,22 +52,25 @@ export function createRouter(): Router {
   // Deep health: verifies the codex binary and app-server path with a tiny turn.
   router.get("/healthz/deep", async (_req: Request, res: Response) => {
     const started = Date.now();
-    const model = resolveModel(process.env.CODEX_PROXY_HEALTH_MODEL || process.env.CODEX_PROXY_DEFAULT_MODEL);
+    const model = resolveModel(process.env.CODEX_PROXY_HEALTH_MODEL || CONFIG.defaultModel);
     const subprocess = new CodexSubprocess();
     try {
-      await subprocess.start({ model, timeoutMs: Number(process.env.CODEX_PROXY_HEALTH_TIMEOUT_MS || 30_000) });
+      await subprocess.start({ model, timeoutMs: CONFIG.healthTimeoutMs, initTimeoutMs: CONFIG.initTimeoutMs });
       const result = await subprocess.submitTurn("Reply with OK only.", {
         model,
-        timeoutMs: Number(process.env.CODEX_PROXY_HEALTH_TIMEOUT_MS || 30_000),
+        timeoutMs: CONFIG.healthTimeoutMs,
+        initTimeoutMs: CONFIG.initTimeoutMs,
+        turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
       });
       res.json({ ok: true, status: "ok", model, latency_ms: Date.now() - started, text: result.text.slice(0, 80) });
     } catch (err) {
+      const mapped = mapErrorToHttp(err, CONFIG.debug);
       res.status(503).json({
         ok: false,
         status: "error",
         model,
         latency_ms: Date.now() - started,
-        error: err instanceof Error ? err.message : String(err),
+        error: mapped.body.error,
       });
     } finally {
       subprocess.kill();
@@ -88,6 +93,9 @@ export function createRouter(): Router {
   // Chat completions
   const handleChatCompletions = async (req: Request, res: Response) => {
     const body = req.body as ChatCompletionRequest;
+    const reqStart = Date.now();
+    const requestId = String(res.locals.requestId || uuid());
+    let status: "ok" | "error" = "error";
     if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
       res.status(400).json({ error: { message: "messages array is required", type: "invalid_request_error" } });
       return;
@@ -95,10 +103,17 @@ export function createRouter(): Router {
 
     const model = resolveModel(body.model);
     const label = canonicalModelLabel(model);
-    incCounter("codex_proxy_requests_total", { endpoint: "chat_completions", model: label });
 
-    const { prompt, options } = chatRequestToOptions(body);
+    const { prompt, options } = chatRequestToOptions(body, {
+      timeoutMs: CONFIG.defaultTimeoutMs,
+      initTimeoutMs: CONFIG.initTimeoutMs,
+      turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
+    });
     const subprocess = new CodexSubprocess();
+    res.on("close", () => {
+      recordRequest({ endpoint: "chat_completions", model, status, durationMs: Date.now() - reqStart });
+      if (!res.writableEnded) subprocess.kill();
+    });
 
     try {
       await subprocess.start(options);
@@ -108,13 +123,16 @@ export function createRouter(): Router {
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
+        res.setHeader("X-Request-Id", requestId);
         res.flushHeaders();
+        res.write(":ok\n\n");
 
-        const streamId = uuid();
+        const streamId = requestId;
         const result = await subprocess.submitTurnStreaming(prompt, options, (delta) => {
           const chunk = makeChatCompletionChunk(streamId, model, delta);
           res.write(chunkToSSE(chunk));
         });
+        status = "ok";
 
         // Final chunk with finish_reason
         const finalChunk = makeChatCompletionChunk(streamId, model, null, "stop");
@@ -128,6 +146,7 @@ export function createRouter(): Router {
       } else {
         const result = await subprocess.submitTurn(prompt, options);
         const response = turnResultToChatCompletion(result, model);
+        status = "ok";
         res.json(response);
 
         if (result.durationMs) {
@@ -136,12 +155,11 @@ export function createRouter(): Router {
       }
     } catch (err) {
       incCounter("codex_proxy_errors_total", { endpoint: "chat_completions", model: label });
-      const message = err instanceof Error ? err.message : String(err);
+      const mapped = mapErrorToHttp(err, CONFIG.debug);
       if (!res.headersSent) {
-        res.status(502).json({ error: { message: `Codex subprocess error: ${message}`, type: "server_error" } });
+        res.status(mapped.status).json(mapped.body);
       } else {
-        // Already streaming - send error event and close
-        res.write(`data: ${JSON.stringify({ error: { message } })}\n\n`);
+        res.write(`event: error\ndata: ${JSON.stringify(mapped.body)}\n\n`);
         res.write(SSE_DONE);
         res.end();
       }
@@ -156,6 +174,9 @@ export function createRouter(): Router {
   // Responses API
   const handleResponses = async (req: Request, res: Response) => {
     const body = req.body as ResponseRequest;
+    const reqStart = Date.now();
+    const requestId = String(res.locals.requestId || uuid());
+    let status: "ok" | "error" = "error";
     if (!body.input) {
       res.status(400).json({ error: { message: "input is required", type: "invalid_request_error" } });
       return;
@@ -163,10 +184,17 @@ export function createRouter(): Router {
 
     const model = resolveModel(body.model);
     const label = canonicalModelLabel(model);
-    incCounter("codex_proxy_requests_total", { endpoint: "responses", model: label });
 
-    const { prompt, options } = responsesRequestToOptions(body);
+    const { prompt, options } = responsesRequestToOptions(body, {
+      timeoutMs: CONFIG.defaultTimeoutMs,
+      initTimeoutMs: CONFIG.initTimeoutMs,
+      turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
+    });
     const subprocess = new CodexSubprocess();
+    res.on("close", () => {
+      recordRequest({ endpoint: "responses", model, status, durationMs: Date.now() - reqStart });
+      if (!res.writableEnded) subprocess.kill();
+    });
 
     try {
       await subprocess.start(options);
@@ -176,9 +204,11 @@ export function createRouter(): Router {
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
+        res.setHeader("X-Request-Id", requestId);
         res.flushHeaders();
+        res.write(":ok\n\n");
 
-        const respId = `resp_${uuid()}`;
+        const respId = `resp_${requestId}`;
         const outputId = `msg_${uuid()}`;
 
         // response.created
@@ -197,6 +227,7 @@ export function createRouter(): Router {
             output_index: 0, content_index: 0, delta,
           }));
         });
+        status = "ok";
 
         // output_text.done
         res.write(makeResponseStreamEvent("response.output_text.done", {
@@ -225,6 +256,7 @@ export function createRouter(): Router {
       } else {
         const result = await subprocess.submitTurn(prompt, options);
         const response = turnResultToResponseObject(result, model);
+        status = "ok";
         res.json(response);
 
         if (result.durationMs) {
@@ -233,11 +265,11 @@ export function createRouter(): Router {
       }
     } catch (err) {
       incCounter("codex_proxy_errors_total", { endpoint: "responses", model: label });
-      const message = err instanceof Error ? err.message : String(err);
+      const mapped = mapErrorToHttp(err, CONFIG.debug);
       if (!res.headersSent) {
-        res.status(502).json({ error: { message: `Codex subprocess error: ${message}`, type: "server_error" } });
+        res.status(mapped.status).json(mapped.body);
       } else {
-        res.write(makeResponseStreamEvent("error", { error: { message } }));
+        res.write(makeResponseStreamEvent("error", mapped.body as unknown as Record<string, unknown>));
         res.end();
       }
     } finally {

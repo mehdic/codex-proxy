@@ -92,6 +92,7 @@ export interface ResponseObject {
   model: string;
   status: "completed" | "failed" | "in_progress";
   output: ResponseOutputItem[];
+  output_text?: string;
   usage?: TokenUsage;
   error?: { message: string; code: string } | null;
 }

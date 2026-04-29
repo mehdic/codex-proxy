@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chatMessagesToPrompt, chatRequestToOptions, responsesRequestToOptions } from "../adapter/openai-to-codex.js";
-import { extractDeltaText, turnResultToChatCompletion, chunkToSSE } from "../adapter/codex-to-openai.js";
+import {
+  appendAssistantText,
+  extractDeltaText,
+  makeResponseStreamEvent,
+  turnResultToChatCompletion,
+  turnResultToResponseObject,
+  chunkToSSE,
+} from "../adapter/codex-to-openai.js";
 import type { TurnResult } from "../subprocess/manager.js";
 
 test("chatMessagesToPrompt separates first system instruction", () => {
@@ -37,7 +44,15 @@ test("extractDeltaText is tolerant", () => {
   assert.equal(extractDeltaText({ delta: "abc" }), "abc");
   assert.equal(extractDeltaText({ text: "direct" }), "direct");
   assert.equal(extractDeltaText({ item: { type: "agentMessage", text: "done" } }), "done");
+  assert.equal(extractDeltaText({ item: { type: "agentMessage", content: [{ type: "output_text", text: "nested" }] } }), "nested");
   assert.equal(extractDeltaText(null), null);
+});
+
+test("appendAssistantText suppresses duplicate completed agent message text", () => {
+  assert.equal(appendAssistantText("", "HEL"), "HEL");
+  assert.equal(appendAssistantText("HEL", "HELLO"), "HELLO");
+  assert.equal(appendAssistantText("HELLO", "HELLO"), "HELLO");
+  assert.equal(appendAssistantText("HELLO", " world"), "HELLO world");
 });
 
 test("turnResultToChatCompletion returns OpenAI-compatible response", () => {
@@ -55,6 +70,21 @@ test("turnResultToChatCompletion returns OpenAI-compatible response", () => {
   assert.equal(response.usage?.total_tokens, 3);
 });
 
+test("turnResultToResponseObject includes output_text and output_text convenience field", () => {
+  const turn: TurnResult = {
+    text: "OK",
+    turnId: "turn_1",
+    threadId: "thread_1",
+    usage: null,
+    durationMs: 10,
+    finishReason: "stop",
+  };
+  const response = turnResultToResponseObject(turn, "gpt-5.5");
+  assert.equal(response.status, "completed");
+  assert.equal(response.output[0].content[0].text, "OK");
+  assert.equal(response.output_text, "OK");
+});
+
 test("chunkToSSE formats data line", () => {
   const sse = chunkToSSE({
     id: "chatcmpl-1",
@@ -66,4 +96,10 @@ test("chunkToSSE formats data line", () => {
   assert.match(sse, /^data: /);
   assert.match(sse, /chat\.completion\.chunk/);
   assert.match(sse, /\n\n$/);
+});
+
+test("makeResponseStreamEvent includes event type in data payload", () => {
+  const event = makeResponseStreamEvent("response.completed", { response: { id: "resp_1" } });
+  assert.match(event, /^event: response\.completed\n/);
+  assert.match(event, /"type":"response\.completed"/);
 });

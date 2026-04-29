@@ -44,21 +44,45 @@ export function extractDeltaText(msg: unknown): string | null {
     if (item.type === "agentMessage" && typeof item.text === "string") {
       return item.text;
     }
+    if (item.type === "agentMessage" && Array.isArray(item.content)) {
+      return textFromContentParts(item.content);
+    }
   }
 
   // Nested content array
   if (Array.isArray(obj.content)) {
-    const texts = obj.content
-      .filter((c: unknown) => typeof c === "object" && c !== null && (c as Record<string, unknown>).type === "output_text")
-      .map((c: unknown) => (c as Record<string, unknown>).text)
-      .filter((t: unknown): t is string => typeof t === "string");
-    if (texts.length > 0) return texts.join("");
+    return textFromContentParts(obj.content);
   }
 
   // text field directly
   if (typeof obj.text === "string") return obj.text;
 
   return null;
+}
+
+function textFromContentParts(content: unknown[]): string | null {
+  const texts = content
+    .filter((c: unknown) => typeof c === "object" && c !== null)
+    .map((c: unknown) => c as Record<string, unknown>)
+    .filter((c) => c.type === "output_text" || c.type === "text")
+    .map((c) => c.text)
+    .filter((t: unknown): t is string => typeof t === "string");
+  return texts.length > 0 ? texts.join("") : null;
+}
+
+/**
+ * Append a Codex text event while tolerating app-server schema drift.
+ *
+ * Some versions emit token deltas and later repeat the whole final text in an
+ * item/completed agentMessage. If the candidate starts with the accumulated
+ * text, treat it as authoritative final text instead of appending a duplicate.
+ */
+export function appendAssistantText(current: string, candidate: string | null): string {
+  if (!candidate) return current;
+  if (!current) return candidate;
+  if (candidate === current) return current;
+  if (candidate.startsWith(current)) return candidate;
+  return current + candidate;
 }
 
 // ── Chat Completions ─────────────────────────────────────────────────
@@ -136,6 +160,7 @@ export function turnResultToResponseObject(
     model,
     status: result.finishReason === "error" ? "failed" : "completed",
     output: [outputItem],
+    output_text: result.text,
     usage: codexUsageToOpenAI(result.usage),
     error: result.finishReason === "error"
       ? { message: "Turn failed", code: "server_error" }
@@ -145,5 +170,5 @@ export function turnResultToResponseObject(
 
 /** Build a Responses API streaming event. */
 export function makeResponseStreamEvent(type: string, data: Record<string, unknown>): string {
-  return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 }

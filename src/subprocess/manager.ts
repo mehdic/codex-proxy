@@ -13,6 +13,10 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { v4 as uuid } from "uuid";
+import { appendAssistantText, extractDeltaText } from "../adapter/codex-to-openai.js";
+import { CONFIG } from "../server/config.js";
+import { CodexProxyError } from "../server/errors.js";
+import { recordSubprocessExit } from "../server/metrics.js";
 import type {
   RequestId,
   InitializeResponse,
@@ -37,6 +41,10 @@ export interface CodexSubprocessOptions {
   cwd?: string;
   /** Timeout in ms for the entire turn (default 120_000) */
   timeoutMs?: number;
+  /** Timeout in ms for individual JSON-RPC setup requests */
+  initTimeoutMs?: number;
+  /** Timeout in ms for turn/start acknowledgement */
+  turnStartTimeoutMs?: number;
   /** System / developer instructions */
   instructions?: string;
   /** Additional config overrides passed as `-c key=value` */
@@ -65,8 +73,10 @@ export class CodexSubprocess {
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
   private notificationHandlers: ((method: string, params: unknown) => void)[] = [];
-  private stderrChunks: string[] = [];
+  private stderrText = "";
   private dead = false;
+  private killTimer: NodeJS.Timeout | null = null;
+  private exitReason: "clean" | "signal" | "error" | "timeout" | "killed" | "unknown" = "unknown";
 
   /**
    * Spawn `codex app-server`, complete the initialize handshake,
@@ -82,7 +92,7 @@ export class CodexSubprocess {
       }
     }
 
-    const codexBin = process.env.CODEX_PROXY_CODEX_BIN || "codex";
+    const codexBin = CONFIG.codexBin;
 
     this.proc = spawn(codexBin, args, {
       cwd: options.cwd || process.cwd(),
@@ -97,30 +107,36 @@ export class CodexSubprocess {
 
     this.proc.stderr!.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8");
-      // Capture stderr for diagnostics but never log secrets
-      this.stderrChunks.push(text);
-      if (this.stderrChunks.length > 50) this.stderrChunks.shift();
-      if (process.env.DEBUG) {
+      // Keep a bounded diagnostic tail. Never emit it unless debug is enabled.
+      this.stderrText = (this.stderrText + text).slice(-CONFIG.stderrMaxBytes);
+      if (CONFIG.debug) {
         process.stderr.write(`[codex-proxy:stderr] ${text}`);
       }
     });
 
     this.proc.on("exit", (code, signal) => {
       this.dead = true;
-      if (process.env.DEBUG) {
+      if (this.killTimer) clearTimeout(this.killTimer);
+      if (this.exitReason === "unknown") this.exitReason = signal ? "signal" : code === 0 ? "clean" : "error";
+      recordSubprocessExit(this.exitReason);
+      if (CONFIG.debug) {
         console.error(`[codex-proxy] app-server exited code=${code} signal=${signal}`);
       }
       // Reject any pending requests
       for (const [, { reject }] of this.pendingResolvers) {
-        reject(new Error(`app-server exited (code=${code}, signal=${signal})`));
+        reject(new CodexProxyError("codex", `app-server exited (code=${code}, signal=${signal})`, {
+          detail: this.stderr,
+        }));
       }
       this.pendingResolvers.clear();
     });
 
     this.proc.on("error", (err) => {
       this.dead = true;
+      this.exitReason = "error";
+      recordSubprocessExit("error");
       for (const [, { reject }] of this.pendingResolvers) {
-        reject(err);
+        reject(new CodexProxyError("spawn", err.message, { cause: err, detail: err.message }));
       }
       this.pendingResolvers.clear();
     });
@@ -135,7 +151,7 @@ export class CodexSubprocess {
       capabilities: {
         experimentalApi: false,
       },
-    });
+    }, options.initTimeoutMs || CONFIG.initTimeoutMs);
 
     // Send initialized notification
     this.sendNotification("initialized");
@@ -153,7 +169,7 @@ export class CodexSubprocess {
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
   ): Promise<TurnResult> {
-    if (this.dead) throw new Error("app-server process is dead");
+    if (this.dead) throw new CodexProxyError("codex", "app-server process is dead", { detail: this.stderr });
 
     let threadId: string;
     let tokenUsage: TokenUsageBreakdown | null = null;
@@ -168,27 +184,45 @@ export class CodexSubprocess {
       baseInstructions: options.instructions || null,
       experimentalRawEvents: false,
       persistExtendedHistory: false,
-    });
+    }, options.initTimeoutMs || CONFIG.initTimeoutMs);
     threadId = threadResp.thread.id;
 
     // Collect assistant text from streamed deltas
     let assistantText = "";
 
+    let timeout: NodeJS.Timeout;
+    let handler: (method: string, params: unknown) => void;
     const turnPromise = new Promise<TurnResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Turn timed out after ${options.timeoutMs || 120_000}ms`));
-        this.kill();
-      }, options.timeoutMs || 120_000);
+      timeout = setTimeout(() => {
+        this.exitReason = "timeout";
+        reject(new CodexProxyError("timeout", `Turn timed out after ${options.timeoutMs || CONFIG.defaultTimeoutMs}ms`, {
+          detail: this.stderr,
+        }));
+        this.kill("SIGTERM", "timeout");
+      }, options.timeoutMs || CONFIG.defaultTimeoutMs);
 
-      const handler = (method: string, params: unknown) => {
+      handler = (method: string, params: unknown) => {
         const p = params as Record<string, unknown>;
         if (p.threadId !== threadId) return;
 
         switch (method) {
           case "item/agentMessage/delta": {
-            const delta = (p as unknown as AgentMessageDeltaNotification).delta;
+            const delta = extractDeltaText(p) || (p as unknown as AgentMessageDeltaNotification).delta;
             assistantText += delta;
             deltaCallback?.(delta);
+            break;
+          }
+          case "item/completed": {
+            const completedText = extractDeltaText(p as unknown as ItemCompletedNotification);
+            const previousText = assistantText;
+            const nextText = appendAssistantText(assistantText, completedText);
+            if (nextText !== previousText && completedText) {
+              const delta = completedText.startsWith(previousText)
+                ? completedText.slice(previousText.length)
+                : completedText;
+              if (delta) deltaCallback?.(delta);
+            }
+            assistantText = nextText;
             break;
           }
           case "thread/tokenUsage/updated": {
@@ -204,9 +238,15 @@ export class CodexSubprocess {
             const finishReason =
               tc.turn.status === "completed"
                 ? "stop"
-                : tc.turn.status === "failed"
+              : tc.turn.status === "failed"
                   ? "error"
                   : "stop";
+            if (!assistantText) {
+              const items = Array.isArray(tc.turn.items) ? tc.turn.items : [];
+              for (const item of items) {
+                assistantText = appendAssistantText(assistantText, extractDeltaText({ item }));
+              }
+            }
 
             resolve({
               text: assistantText,
@@ -223,7 +263,9 @@ export class CodexSubprocess {
             if (!err.willRetry) {
               clearTimeout(timeout);
               this.removeNotificationHandler(handler);
-              reject(new Error(`Codex error: ${err.error.message}`));
+              reject(new CodexProxyError("codex", `Codex error: ${err.error.message}`, {
+                detail: err.error.additionalDetails || err.error.message,
+              }));
             }
             break;
           }
@@ -234,17 +276,24 @@ export class CodexSubprocess {
     });
 
     // Start turn
-    await this.sendRequest<TurnStartResponse>("turn/start", {
-      threadId,
-      input: [
-        {
-          type: "text",
-          text: userText,
-          text_elements: [],
-        },
-      ],
-      model: options.model,
-    });
+    try {
+      await this.sendRequest<TurnStartResponse>("turn/start", {
+        threadId,
+        input: [
+          {
+            type: "text",
+            text: userText,
+            text_elements: [],
+          },
+        ],
+        model: options.model,
+      }, options.turnStartTimeoutMs || CONFIG.turnStartTimeoutMs);
+    } catch (err) {
+      clearTimeout(timeout!);
+      this.removeNotificationHandler(handler!);
+      this.kill("SIGTERM", "killed");
+      throw err;
+    }
 
     return turnPromise;
   }
@@ -284,12 +333,22 @@ export class CodexSubprocess {
     return ++this.requestId;
   }
 
-  private sendRequest<T>(method: string, params: unknown): Promise<T> {
+  private sendRequest<T>(method: string, params: unknown, timeoutMs = CONFIG.initTimeoutMs): Promise<T> {
     return new Promise((resolve, reject) => {
       const id = this.nextId();
+      const timeout = setTimeout(() => {
+        this.pendingResolvers.delete(id);
+        reject(new CodexProxyError("timeout", `${method} timed out after ${timeoutMs}ms`, { detail: this.stderr }));
+      }, timeoutMs);
       this.pendingResolvers.set(id, {
-        resolve: resolve as (v: unknown) => void,
-        reject,
+        resolve: (value: unknown) => {
+          clearTimeout(timeout);
+          resolve(value as T);
+        },
+        reject: (err: Error) => {
+          clearTimeout(timeout);
+          reject(err);
+        },
       });
       this.write({
         jsonrpc: "2.0",
@@ -325,7 +384,7 @@ export class CodexSubprocess {
       try {
         msg = JSON.parse(line);
       } catch {
-        if (process.env.DEBUG) {
+        if (CONFIG.debug) {
           console.error("[codex-proxy] unparseable line:", line.slice(0, 200));
         }
         continue;
@@ -343,7 +402,9 @@ export class CodexSubprocess {
         this.pendingResolvers.delete(msg.id as RequestId);
         if ("error" in msg && msg.error) {
           resolver.reject(
-            new Error(`JSON-RPC error ${msg.error.code}: ${msg.error.message}`),
+            new CodexProxyError("protocol", `JSON-RPC error ${msg.error.code}: ${msg.error.message}`, {
+              detail: msg.error.message,
+            }),
           );
         } else {
           resolver.resolve((msg as { result: unknown }).result);
@@ -377,19 +438,22 @@ export class CodexSubprocess {
   }
 
   /** Kill the subprocess. */
-  kill(): void {
+  kill(signal: NodeJS.Signals = "SIGTERM", reason: "killed" | "timeout" = "killed"): void {
     if (this.proc && !this.dead) {
       this.dead = true;
+      this.exitReason = reason;
       this.proc.stdin?.end();
-      this.proc.kill("SIGTERM");
+      this.proc.kill(signal);
       // Force kill after 5s
-      setTimeout(() => {
+      this.killTimer = setTimeout(() => {
         try {
+          this.exitReason = "killed";
           this.proc?.kill("SIGKILL");
         } catch {
           // already dead
         }
       }, 5000);
+      this.killTimer.unref?.();
     }
   }
 
@@ -400,6 +464,6 @@ export class CodexSubprocess {
 
   /** Recent stderr lines for diagnostics. */
   get stderr(): string {
-    return this.stderrChunks.join("");
+    return this.stderrText;
   }
 }
