@@ -24,6 +24,7 @@ The cost is translation complexity: OpenAI chat completions are stateless and me
 - no auth persistence in this project
 - conservative approvals/sandbox parameters where supported
 - text-only MVP
+- app-server reuse is limited to a bounded worker pool; Codex CLI/app-server still owns authentication
 
 ## API compatibility target
 
@@ -36,7 +37,13 @@ The first compatibility target is enough for OpenAI-compatible clients that expe
 
 The Responses API endpoint exists as a minimal text bridge, not a full OpenAI Responses implementation yet.
 
-## Non-goals for MVP
+## Runtime tradeoff
+
+The default `pool` runtime avoids repeated app-server initialization while preserving stateless request semantics at the Codex thread layer. `oneshot` remains available for diagnosis and for upstream app-server regressions.
+
+The proxy deliberately does not map user sessions to persistent Codex threads yet. That may be useful later, but it has a larger safety surface because Codex is an agent and thread state can affect future turns.
+
+## Non-goals
 
 - account pooling
 - multi-user auth
@@ -45,4 +52,4 @@ The Responses API endpoint exists as a minimal text bridge, not a full OpenAI Re
 - private Codex backend emulation
 - tool call translation
 - image input/output
-- persistent Codex threads
+- persistent Codex threads by default

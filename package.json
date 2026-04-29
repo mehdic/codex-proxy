@@ -1,6 +1,6 @@
 {
   "name": "codex-proxy",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenAI-compatible local HTTP API proxy for Codex app-server over stdio JSON-RPC",
   "type": "module",
   "main": "dist/server/standalone.js",

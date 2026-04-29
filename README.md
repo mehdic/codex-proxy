@@ -21,7 +21,7 @@ This follows the same philosophy as [`claude-proxy`](https://github.com/mehdic/c
 
 ## Status
 
-v0.2 local proxy. Working locally with:
+v0.3 local proxy. Working locally with:
 
 - non-streaming `/v1/chat/completions`
 - streaming `/v1/chat/completions`
@@ -33,6 +33,9 @@ v0.2 local proxy. Working locally with:
 - `/version`
 - `/metrics`
 - app-server stdio transport
+- pooled persistent `codex app-server` workers with one ephemeral thread per request
+- one-shot fallback mode
+- SSE keepalive comments for streaming clients
 - env-gated localhost CORS
 
 The implementation intentionally avoids the experimental Codex WebSocket transport.
@@ -69,6 +72,37 @@ node dist/server/standalone.js 3470
 ```
 
 The standalone server handles `SIGINT` and `SIGTERM` by closing the HTTP server with a configurable grace period (`CODEX_PROXY_SHUTDOWN_GRACE_MS`, default `10000`).
+
+## Runtime modes
+
+`codex-proxy` supports two Codex app-server runtime modes:
+
+- `pool` (default): keeps warm persistent `codex app-server --listen stdio://` workers and reuses each worker across sequential requests. Every request still starts a fresh ephemeral Codex thread.
+- `oneshot`: starts a fresh app-server process per request, matching the original v0.2 behavior.
+
+Configure the default with:
+
+```bash
+CODEX_PROXY_RUNTIME=pool npm start
+CODEX_PROXY_RUNTIME=oneshot npm start
+```
+
+Per-request runtime override is ignored unless explicitly enabled:
+
+```bash
+CODEX_PROXY_ALLOW_RUNTIME_OVERRIDE=1 npm start
+curl -H 'X-Codex-Proxy-Runtime: oneshot' ...
+```
+
+Pool controls:
+
+- `CODEX_PROXY_POOL_MAX` default `2`: maximum live app-server workers.
+- `CODEX_PROXY_POOL_TTL_MS` default `600000`: idle worker TTL.
+- `CODEX_PROXY_PREWARM_MODELS` default `gpt-5.5,gpt-5.4-mini`: models to prewarm at startup.
+- `CODEX_PROXY_INIT_POOL=0`: disables startup prewarm.
+- `CODEX_PROXY_FALLBACK_ON_POOL_FAILURE=0`: disables retrying eligible pool transport failures with one-shot before any HTTP response is committed.
+
+Streaming responses send SSE comment keepalives (`:ok\n\n`) when idle. Configure with `CODEX_PROXY_KEEPALIVE_MS`, default `10000`; set `0` to disable. Comments do not create OpenAI data events and are intended only to keep compatible clients and intermediaries from timing out.
 
 ## Smoke tests
 
@@ -144,6 +178,14 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 | `CODEX_PROXY_HOST` | `127.0.0.1` | HTTP bind host. Keep localhost unless you really know what you are doing. |
 | `CODEX_PROXY_MAX_BODY` | `8mb` | JSON body limit |
 | `CODEX_PROXY_DEFAULT_MODEL` | `gpt-5.5` | Default model when client omits one |
+| `CODEX_PROXY_RUNTIME` | `pool` | `pool` or `oneshot` app-server runtime |
+| `CODEX_PROXY_ALLOW_RUNTIME_OVERRIDE` | unset | Set `1` to honor `X-Codex-Proxy-Runtime` |
+| `CODEX_PROXY_POOL_MAX` | `2` | Maximum live pooled app-server workers |
+| `CODEX_PROXY_POOL_TTL_MS` | `600000` | Idle worker TTL |
+| `CODEX_PROXY_PREWARM_MODELS` | `gpt-5.5,gpt-5.4-mini` | Comma-separated startup prewarm models |
+| `CODEX_PROXY_INIT_POOL` | enabled | Set `0` to disable startup prewarm |
+| `CODEX_PROXY_FALLBACK_ON_POOL_FAILURE` | enabled | Set `0` to disable pool-to-oneshot retry before response commit |
+| `CODEX_PROXY_KEEPALIVE_MS` | `10000` | SSE comment keepalive interval; `0` disables |
 | `CODEX_PROXY_CODEX_BIN` | `codex` | Codex binary path |
 | `CODEX_PROXY_HEALTH_MODEL` | default model | Model for `/healthz/deep` |
 | `CODEX_PROXY_HEALTH_TIMEOUT_MS` | `30000` | Deep health timeout |
@@ -162,7 +204,7 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 - Binds to localhost by default.
 - Does **not** read, store, print, or copy Codex OAuth tokens.
 - Delegates auth/session refresh to the official Codex CLI/app-server.
-- Uses a fresh app-server process and ephemeral thread per request in the MVP.
+- Uses a fresh ephemeral Codex thread per request. In `pool` runtime, only the initialized app-server process is reused.
 - Requests are run with conservative app-server parameters (`approvalPolicy: never`, `sandbox: read-only`) where supported.
 
 Important caveat: Codex is an agent, not merely a text model. Keep this service private and localhost-only unless you add your own authentication, authorization, and sandbox policy review.
@@ -181,10 +223,10 @@ Run live smoke after starting the server:
 npm run smoke
 ```
 
-## v0.2 roadmap
+## Roadmap
 
 - Better `/v1/responses` compatibility for additional content parts and event aliases.
-- Optional warm worker/session mode once lifecycle and failure handling are well-tested.
+- Optional safe session mapping once Codex thread lifecycle behavior is better understood.
 - More schema-drift fixtures for Codex app-server notifications.
 - Expanded operational docs for launchd, systemd, and client integrations.
 - Optional local auth layer for non-loopback deployments.

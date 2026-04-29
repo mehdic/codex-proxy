@@ -23,6 +23,8 @@ Then it sends Codex app-server JSON-RPC:
 { "method": "turn/start", "id": 3, "params": { "threadId": "...", "input": [{ "type": "text", "text": "..." }] } }
 ```
 
+In `pool` runtime, `initialize` and `initialized` happen once per app-server worker. `thread/start` and `turn/start` still happen per request with `ephemeral: true`.
+
 Deltas from `item/agentMessage/delta` become OpenAI streaming chunks:
 
 ```text
@@ -30,6 +32,15 @@ data: {"object":"chat.completion.chunk", ...}
 ```
 
 `turn/completed` emits the final stop chunk and `[DONE]`.
+
+Streaming endpoints may include SSE comment keepalives:
+
+```text
+:ok
+
+```
+
+These comments do not carry JSON data and should be ignored by SSE clients.
 
 ## Responses
 

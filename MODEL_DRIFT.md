@@ -12,6 +12,7 @@ Codex app-server is not a stable public OpenAI API. It is a JSON-RPC interface o
 - content item shapes for completed assistant messages
 - token usage field names
 - error payload shape and retry behavior
+- app-server behavior when one initialized stdio process handles multiple ephemeral threads over time
 
 The proxy intentionally uses stdio app-server transport:
 
@@ -58,6 +59,8 @@ Then manually verify:
 - non-streaming `/v1/responses` returns `output_text`.
 - streaming `/v1/responses` emits `response.created`, text delta events, and `response.completed`.
 - errors remain OpenAI-style and do not include secrets.
+- in `pool` runtime, repeated requests reuse app-server workers without reusing Codex threads.
+- in `oneshot` runtime, a request still succeeds with a fresh app-server process.
 
 If a live smoke fails because of quota or Codex auth, verify the CLI directly:
 

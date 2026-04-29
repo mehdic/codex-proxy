@@ -6,9 +6,10 @@
  * turn, and collects streamed agent message deltas until the turn
  * completes.
  *
- * Design: one-shot per request. Each HTTP request gets a fresh
- * app-server process. Clean, safe, no shared state. A persistent
- * pool can be layered on later via the same interface.
+ * Design: the manager owns one official app-server process. It can be
+ * used one-shot per request or kept warm by the worker pool; every turn
+ * still starts a fresh ephemeral Codex thread unless higher layers add
+ * explicit session semantics.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";

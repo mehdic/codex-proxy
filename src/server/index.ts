@@ -4,6 +4,7 @@ import { v4 as uuid } from "uuid";
 import { CONFIG, parseConfig } from "./config.js";
 import { createRouter } from "./routes.js";
 import { invalidRequestError } from "./errors.js";
+import { drainGlobalPool, prewarmGlobalPool } from "../subprocess/pool.js";
 
 export interface ServerOptions {
   host?: string;
@@ -64,7 +65,10 @@ export async function startServer(options: ServerOptions = {}) {
     const server = createServer(app);
     serverInstance = server;
     server.once("error", reject);
-    server.listen(port, host, () => resolve({ app, server, host, port }));
+    server.listen(port, host, () => {
+      prewarmGlobalPool();
+      resolve({ app, server, host, port });
+    });
   });
 }
 
@@ -72,6 +76,7 @@ export async function stopServer(graceMs = CONFIG.shutdownGraceMs): Promise<void
   if (!serverInstance) return;
   const server = serverInstance;
   serverInstance = null;
+  drainGlobalPool();
 
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {

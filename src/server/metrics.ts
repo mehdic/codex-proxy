@@ -9,11 +9,15 @@ import { canonicalModelLabel } from "../adapter/openai-to-codex.js";
 
 type EndpointLabel = "chat" | "chat_completions" | "responses" | "models" | "health" | "metrics" | "other";
 type StatusLabel = "ok" | "error";
+type RuntimeLabel = "pool" | "oneshot";
 type ExitReason = "clean" | "signal" | "error" | "timeout" | "killed" | "unknown";
+type PoolEvent = "warm_hit" | "cold_spawn" | "ttl_eviction" | "lru_eviction" | "stale_eviction" | "prewarm_error";
+type FallbackReason = "pool_failure";
 
 interface RequestRecord {
   endpoint: string;
   model: string;
+  runtime?: string;
   status: StatusLabel;
   durationMs: number;
 }
@@ -28,6 +32,18 @@ const counters: Record<string, number> = {};
 const histogramSums: Record<string, number> = {};
 const histogramCounts: Record<string, number> = {};
 const requestRecords = new Map<string, RequestBucket>();
+const poolEvents: Record<PoolEvent, number> = {
+  warm_hit: 0,
+  cold_spawn: 0,
+  ttl_eviction: 0,
+  lru_eviction: 0,
+  stale_eviction: 0,
+  prewarm_error: 0,
+};
+const fallbacks: Record<FallbackReason, number> = {
+  pool_failure: 0,
+};
+let poolSize = 0;
 const subprocessExits: Record<ExitReason, number> = {
   clean: 0,
   signal: 0,
@@ -54,8 +70,9 @@ export function observeHistogram(name: string, value: number, labels?: Record<st
 export function recordRequest(rec: RequestRecord): void {
   const endpoint = canonicalEndpoint(rec.endpoint);
   const model = canonicalModelLabel(rec.model);
+  const runtime = canonicalRuntime(rec.runtime);
   const status = rec.status === "ok" ? "ok" : "error";
-  const key = `${endpoint}|${model}|${status}`;
+  const key = `${endpoint}|${model}|${runtime}|${status}`;
   let bucket = requestRecords.get(key);
   if (!bucket) {
     bucket = {
@@ -78,20 +95,57 @@ export function recordSubprocessExit(reason: string): void {
   subprocessExits[label]++;
 }
 
+export function recordPoolEvent(event: string): void {
+  const label = canonicalPoolEvent(event);
+  poolEvents[label]++;
+}
+
+export function recordFallback(reason: string): void {
+  const label = canonicalFallbackReason(reason);
+  fallbacks[label]++;
+}
+
+export function setPoolSize(size: number): void {
+  poolSize = Math.max(0, Math.floor(size));
+}
+
 function sanitizeLabels(labels?: Record<string, string>): Record<string, string> | undefined {
   if (!labels) return undefined;
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(labels)) {
     if (key === "model") out[key] = canonicalModelLabel(value);
     else if (key === "endpoint") out[key] = canonicalEndpoint(value);
+    else if (key === "runtime") out[key] = canonicalRuntime(value);
     else if (key === "status") out[key] = value === "ok" ? "ok" : "error";
     else out[key] = safeLabel(value);
   }
   return out;
 }
 
+function canonicalRuntime(runtime: string | undefined): RuntimeLabel {
+  return runtime === "oneshot" ? "oneshot" : "pool";
+}
+
 function canonicalEndpoint(endpoint: string): EndpointLabel {
   return ENDPOINTS.has(endpoint as EndpointLabel) ? endpoint as EndpointLabel : "other";
+}
+
+function canonicalPoolEvent(event: string): PoolEvent {
+  switch (event) {
+    case "warm_hit":
+    case "cold_spawn":
+    case "ttl_eviction":
+    case "lru_eviction":
+    case "stale_eviction":
+    case "prewarm_error":
+      return event;
+    default:
+      return "prewarm_error";
+  }
+}
+
+function canonicalFallbackReason(reason: string): FallbackReason {
+  return reason === "pool_failure" ? "pool_failure" : "pool_failure";
 }
 
 function canonicalExitReason(reason: string): ExitReason {
@@ -130,8 +184,8 @@ export function renderMetrics(): string {
   lines.push("# HELP codex_proxy_requests_total Total HTTP requests");
   lines.push("# TYPE codex_proxy_requests_total counter");
   for (const [key, bucket] of requestRecords) {
-    const [endpoint, model, status] = key.split("|");
-    lines.push(`codex_proxy_requests_total{endpoint="${endpoint}",model="${model}",status="${status}"} ${bucket.count}`);
+    const [endpoint, model, runtime, status] = key.split("|");
+    lines.push(`codex_proxy_requests_total{endpoint="${endpoint}",model="${model}",runtime="${runtime}",status="${status}"} ${bucket.count}`);
   }
   for (const [key, val] of Object.entries(counters)) {
     if (key.startsWith("codex_proxy_requests_total")) lines.push(`${key} ${val}`);
@@ -146,8 +200,8 @@ export function renderMetrics(): string {
   lines.push("# HELP codex_proxy_request_duration_seconds Request handler latency");
   lines.push("# TYPE codex_proxy_request_duration_seconds histogram");
   for (const [key, bucket] of requestRecords) {
-    const [endpoint, model, status] = key.split("|");
-    const labels = `endpoint="${endpoint}",model="${model}",status="${status}"`;
+    const [endpoint, model, runtime, status] = key.split("|");
+    const labels = `endpoint="${endpoint}",model="${model}",runtime="${runtime}",status="${status}"`;
     for (const le of REQUEST_BUCKETS_MS) {
       lines.push(`codex_proxy_request_duration_seconds_bucket{${labels},le="${(le / 1000).toFixed(3)}"} ${bucket.buckets[le]}`);
     }
@@ -172,6 +226,22 @@ export function renderMetrics(): string {
     lines.push(`codex_proxy_subprocess_exits_total{reason="${reason}"} ${count}`);
   }
 
+  lines.push("# HELP codex_proxy_pool_events_total Worker pool lifecycle events");
+  lines.push("# TYPE codex_proxy_pool_events_total counter");
+  for (const [event, count] of Object.entries(poolEvents)) {
+    lines.push(`codex_proxy_pool_events_total{event="${event}"} ${count}`);
+  }
+
+  lines.push("# HELP codex_proxy_fallbacks_total Runtime fallback events");
+  lines.push("# TYPE codex_proxy_fallbacks_total counter");
+  for (const [reason, count] of Object.entries(fallbacks)) {
+    lines.push(`codex_proxy_fallbacks_total{reason="${reason}"} ${count}`);
+  }
+
+  lines.push("# HELP codex_proxy_pool_size Current app-server worker pool size");
+  lines.push("# TYPE codex_proxy_pool_size gauge");
+  lines.push(`codex_proxy_pool_size ${poolSize}`);
+
   lines.push("# HELP codex_proxy_uptime_seconds Proxy uptime in seconds");
   lines.push("# TYPE codex_proxy_uptime_seconds gauge");
   lines.push(`codex_proxy_uptime_seconds ${Math.floor(process.uptime())}`);
@@ -185,5 +255,8 @@ export function resetMetrics(): void {
   for (const key of Object.keys(histogramSums)) delete histogramSums[key];
   for (const key of Object.keys(histogramCounts)) delete histogramCounts[key];
   requestRecords.clear();
+  for (const key of Object.keys(poolEvents) as PoolEvent[]) poolEvents[key] = 0;
+  for (const key of Object.keys(fallbacks) as FallbackReason[]) fallbacks[key] = 0;
+  poolSize = 0;
   for (const key of Object.keys(subprocessExits) as ExitReason[]) subprocessExits[key] = 0;
 }

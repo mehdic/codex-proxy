@@ -8,6 +8,14 @@ test("parseConfig applies safe defaults", () => {
   assert.equal(cfg.port, 3466);
   assert.equal(cfg.defaultTimeoutMs, 120_000);
   assert.equal(cfg.shutdownGraceMs, 10_000);
+  assert.equal(cfg.runtime, "pool");
+  assert.equal(cfg.allowRuntimeOverride, false);
+  assert.equal(cfg.poolMax, 2);
+  assert.equal(cfg.poolTtlMs, 600_000);
+  assert.deepEqual(cfg.prewarmModels, ["gpt-5.5", "gpt-5.4-mini"]);
+  assert.equal(cfg.initPool, true);
+  assert.equal(cfg.fallbackOnPoolFailure, true);
+  assert.equal(cfg.keepaliveMs, 10_000);
   assert.equal(cfg.debug, false);
   assert.equal(cfg.cors, false);
 });
@@ -19,6 +27,14 @@ test("parseConfig reads env overrides and clamps invalid numbers", () => {
     CODEX_PROXY_TIMEOUT_MS: "90000",
     CODEX_PROXY_TURN_START_TIMEOUT_MS: "bad",
     CODEX_PROXY_SHUTDOWN_GRACE_MS: "-1",
+    CODEX_PROXY_RUNTIME: "oneshot",
+    CODEX_PROXY_ALLOW_RUNTIME_OVERRIDE: "1",
+    CODEX_PROXY_POOL_MAX: "4",
+    CODEX_PROXY_POOL_TTL_MS: "5000",
+    CODEX_PROXY_PREWARM_MODELS: "gpt-5.4-mini, custom-model, gpt-5.5",
+    CODEX_PROXY_INIT_POOL: "0",
+    CODEX_PROXY_FALLBACK_ON_POOL_FAILURE: "0",
+    CODEX_PROXY_KEEPALIVE_MS: "0",
     CODEX_PROXY_DEBUG: "1",
     CODEX_PROXY_CORS: "1",
   });
@@ -28,6 +44,14 @@ test("parseConfig reads env overrides and clamps invalid numbers", () => {
   assert.equal(cfg.defaultTimeoutMs, 90_000);
   assert.equal(cfg.turnStartTimeoutMs, 10_000);
   assert.equal(cfg.shutdownGraceMs, 10_000);
+  assert.equal(cfg.runtime, "oneshot");
+  assert.equal(cfg.allowRuntimeOverride, true);
+  assert.equal(cfg.poolMax, 4);
+  assert.equal(cfg.poolTtlMs, 5000);
+  assert.deepEqual(cfg.prewarmModels, ["gpt-5.4-mini", "custom-model", "gpt-5.5"]);
+  assert.equal(cfg.initPool, false);
+  assert.equal(cfg.fallbackOnPoolFailure, false);
+  assert.equal(cfg.keepaliveMs, 0);
   assert.equal(cfg.debug, true);
   assert.equal(cfg.cors, true);
 });

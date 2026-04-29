@@ -35,6 +35,27 @@ test("chatRequestToOptions uses requested model", () => {
   assert.equal(options.model, "gpt-5.4-mini");
 });
 
+test("request option builders preserve subprocess timeout defaults", () => {
+  const defaults = {
+    timeoutMs: 90_000,
+    initTimeoutMs: 12_000,
+    turnStartTimeoutMs: 3000,
+  };
+
+  const chat = chatRequestToOptions({
+    model: "gpt-5.5",
+    messages: [{ role: "user", content: "Reply OK" }],
+  }, defaults);
+  assert.equal(chat.options.timeoutMs, 90_000);
+  assert.equal(chat.options.initTimeoutMs, 12_000);
+  assert.equal(chat.options.turnStartTimeoutMs, 3000);
+
+  const responses = responsesRequestToOptions({ model: "gpt-5.5", input: "Reply OK" }, defaults);
+  assert.equal(responses.options.timeoutMs, 90_000);
+  assert.equal(responses.options.initTimeoutMs, 12_000);
+  assert.equal(responses.options.turnStartTimeoutMs, 3000);
+});
+
 test("responsesRequestToOptions handles string input", () => {
   const { prompt, options } = responsesRequestToOptions({ model: "gpt-5.5", input: "Summarize" });
   assert.equal(prompt, "Summarize");
