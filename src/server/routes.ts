@@ -27,7 +27,7 @@ import { GLOBAL_CODEX_POOL, type PoolLease } from "../subprocess/pool.js";
 import { GLOBAL_CODEX_SESSIONS } from "../subprocess/session-pool.js";
 import { isPoolTransportFault } from "../subprocess/fallback.js";
 import { resolveRuntime, resolveSessionRequest, type RuntimeMode } from "../subprocess/runtime.js";
-import { startSseKeepalive } from "./keepalive.js";
+import { startSseKeepalive, guardedWrite } from "./keepalive.js";
 import { incCounter, observeHistogram, recordFallback, recordRequest, renderMetrics } from "./metrics.js";
 import { CONFIG } from "./config.js";
 import { CodexProxyError, invalidRequestError, mapErrorToHttp } from "./errors.js";
@@ -154,10 +154,12 @@ export function createRouter(): Router {
         res.setHeader("X-Request-Id", requestId);
         res.flushHeaders();
         let lastStreamWrite = Date.now();
-        res.write(":ok\n\n");
-        const keepalive = startSseKeepalive(CONFIG.keepaliveMs, (chunk) => {
-          res.write(chunk);
-        }, () => lastStreamWrite, (next) => {
+        const safeWrite = guardedWrite(
+          (chunk) => res.write(chunk),
+          () => !res.writableEnded && res.writable,
+        );
+        safeWrite(":ok\n\n");
+        const keepalive = startSseKeepalive(CONFIG.keepaliveMs, safeWrite, () => lastStreamWrite, (next) => {
           lastStreamWrite = next;
         });
 
@@ -166,7 +168,7 @@ export function createRouter(): Router {
         try {
           result = await runTurn(prompt, options, runtime, "chat_completions", (delta) => {
             const chunk = makeChatCompletionChunk(streamId, model, delta);
-            res.write(chunkToSSE(chunk));
+            safeWrite(chunkToSSE(chunk));
             lastStreamWrite = Date.now();
           }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined);
         } finally {
@@ -176,8 +178,8 @@ export function createRouter(): Router {
 
         // Final chunk with finish_reason
         const finalChunk = makeChatCompletionChunk(streamId, model, null, "stop");
-        res.write(chunkToSSE(finalChunk));
-        res.write(SSE_DONE);
+        safeWrite(chunkToSSE(finalChunk));
+        safeWrite(SSE_DONE);
         lastStreamWrite = Date.now();
         res.end();
 
@@ -208,10 +210,11 @@ export function createRouter(): Router {
       }
     } catch (err) {
       incCounter("codex_proxy_errors_total", { endpoint: "chat_completions", model: label });
+      if (err instanceof CodexProxyError && err.kind === "client_closed") return;
       const mapped = mapErrorToHttp(err, CONFIG.debug);
       if (!res.headersSent) {
         res.status(mapped.status).json(mapped.body);
-      } else {
+      } else if (!res.writableEnded && res.writable) {
         res.write(`event: error\ndata: ${JSON.stringify(mapped.body)}\n\n`);
         res.write(SSE_DONE);
         res.end();
@@ -263,10 +266,12 @@ export function createRouter(): Router {
         res.setHeader("X-Request-Id", requestId);
         res.flushHeaders();
         let lastStreamWrite = Date.now();
-        res.write(":ok\n\n");
-        const keepalive = startSseKeepalive(CONFIG.keepaliveMs, (chunk) => {
-          res.write(chunk);
-        }, () => lastStreamWrite, (next) => {
+        const safeWrite = guardedWrite(
+          (chunk) => res.write(chunk),
+          () => !res.writableEnded && res.writable,
+        );
+        safeWrite(":ok\n\n");
+        const keepalive = startSseKeepalive(CONFIG.keepaliveMs, safeWrite, () => lastStreamWrite, (next) => {
           lastStreamWrite = next;
         });
 
@@ -274,24 +279,24 @@ export function createRouter(): Router {
         const outputId = `msg_${uuid()}`;
 
         // response.created
-        res.write(makeResponseStreamEvent("response.created", {
+        safeWrite(makeResponseStreamEvent("response.created", {
           response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", model, output: [] },
         }));
         lastStreamWrite = Date.now();
 
-        res.write(makeResponseStreamEvent("response.in_progress", {
+        safeWrite(makeResponseStreamEvent("response.in_progress", {
           response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", model, output: [] },
         }));
         lastStreamWrite = Date.now();
 
         // output_item.added
-        res.write(makeResponseStreamEvent("response.output_item.added", {
+        safeWrite(makeResponseStreamEvent("response.output_item.added", {
           output_index: 0,
           item: { type: "message", id: outputId, role: "assistant", status: "in_progress", content: [] },
         }));
         lastStreamWrite = Date.now();
 
-        res.write(makeResponseStreamEvent("response.content_part.added", {
+        safeWrite(makeResponseStreamEvent("response.content_part.added", {
           output_index: 0,
           content_index: 0,
           item_id: outputId,
@@ -302,7 +307,7 @@ export function createRouter(): Router {
         let result: TurnResult;
         try {
           result = await runTurn(prompt, options, runtime, "responses", (delta) => {
-            res.write(makeResponseStreamEvent("response.output_text.delta", {
+            safeWrite(makeResponseStreamEvent("response.output_text.delta", {
               output_index: 0, content_index: 0, delta,
             }));
             lastStreamWrite = Date.now();
@@ -313,10 +318,10 @@ export function createRouter(): Router {
         status = "ok";
 
         // output_text.done
-        res.write(makeResponseTextDoneEvent(0, 0, result.text));
+        safeWrite(makeResponseTextDoneEvent(0, 0, result.text));
         lastStreamWrite = Date.now();
 
-        res.write(makeResponseStreamEvent("response.content_part.done", {
+        safeWrite(makeResponseStreamEvent("response.content_part.done", {
           output_index: 0,
           content_index: 0,
           item_id: outputId,
@@ -325,7 +330,7 @@ export function createRouter(): Router {
         lastStreamWrite = Date.now();
 
         // output_item.done
-        res.write(makeResponseStreamEvent("response.output_item.done", {
+        safeWrite(makeResponseStreamEvent("response.output_item.done", {
           output_index: 0,
           item: {
             type: "message", id: outputId, role: "assistant", status: "completed",
@@ -335,7 +340,7 @@ export function createRouter(): Router {
         lastStreamWrite = Date.now();
 
         // response.completed
-        res.write(makeResponseStreamEvent("response.completed", {
+        safeWrite(makeResponseStreamEvent("response.completed", {
           response: turnResultToResponseObject(result, model, { responseId: respId, outputId }),
         }));
         lastStreamWrite = Date.now();
@@ -366,10 +371,11 @@ export function createRouter(): Router {
       }
     } catch (err) {
       incCounter("codex_proxy_errors_total", { endpoint: "responses", model: label });
+      if (err instanceof CodexProxyError && err.kind === "client_closed") return;
       const mapped = mapErrorToHttp(err, CONFIG.debug);
       if (!res.headersSent) {
         res.status(mapped.status).json(mapped.body);
-      } else {
+      } else if (!res.writableEnded && res.writable) {
         res.write(makeResponseStreamEvent("error", mapped.body as unknown as Record<string, unknown>));
         res.end();
       }

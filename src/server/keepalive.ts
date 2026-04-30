@@ -4,7 +4,7 @@ export interface KeepaliveWriteOptions {
   now: number;
   lastWriteMs: number;
   intervalMs: number;
-  write: (chunk: string) => void;
+  write: (chunk: string) => boolean;
 }
 
 export function maybeWriteSseKeepalive(options: KeepaliveWriteOptions): number {
@@ -14,9 +14,24 @@ export function maybeWriteSseKeepalive(options: KeepaliveWriteOptions): number {
   return options.now;
 }
 
+/**
+ * Wrap a raw write function with a writable guard.
+ * Returns false (and skips the write) when the stream is no longer writable,
+ * preventing EPIPE / ERR_STREAM_WRITE_AFTER_END on client disconnect.
+ */
+export function guardedWrite(
+  write: (chunk: string) => boolean,
+  writable: () => boolean,
+): (chunk: string) => boolean {
+  return (chunk: string) => {
+    if (!writable()) return false;
+    return write(chunk);
+  };
+}
+
 export function startSseKeepalive(
   intervalMs: number,
-  write: (chunk: string) => void,
+  write: (chunk: string) => boolean,
   getLastWriteMs: () => number,
   setLastWriteMs: (value: number) => void,
 ): NodeJS.Timeout | null {

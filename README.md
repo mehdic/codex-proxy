@@ -36,7 +36,7 @@ v0.4 local proxy. Working locally with:
 - pooled persistent `codex app-server` workers with one ephemeral thread per request
 - opt-in, TTL-limited Codex session/thread pooling
 - one-shot fallback mode
-- SSE keepalive comments for streaming clients
+- SSE keepalive comments for streaming clients with writable-guard hardening
 - env-gated localhost CORS
 
 The implementation intentionally avoids the experimental Codex WebSocket transport.
@@ -123,6 +123,8 @@ Session controls:
 Session ids are never used as metric labels. Prompts, raw instructions, and raw cwd values are not used in logs, metrics labels, or pool/session keys.
 
 Streaming responses send SSE comment keepalives (`:ok\n\n`) when idle. Configure with `CODEX_PROXY_KEEPALIVE_MS`, default `10000`; set `0` to disable. Comments do not create OpenAI data events and are intended only to keep compatible clients and intermediaries from timing out.
+
+All streaming writes (keepalive, delta, finish, error) are guarded against writing to a closed or ended response stream. When a client disconnects mid-stream, the proxy silently drops remaining writes instead of crashing with EPIPE or ERR_STREAM_WRITE_AFTER_END. Client-close cancellation (`client_closed`) errors are suppressed in both streaming error handlers to avoid emitting invalid SSE error events to a dead connection.
 
 ## Smoke tests
 

@@ -192,17 +192,25 @@ test("chatRequestToOptions adds structured tool JSON instruction for explicit to
   assert.match(prompt, /rating/);
 });
 
-test("requestedFunctionTool does not force tool calls for auto or omitted tool_choice", () => {
-  const req = {
+test("requestedFunctionTool forces single schema-style structured output but not operational tools", () => {
+  const schemaReq = {
     tools: [{
       type: "function" as const,
       function: { name: "Decision", parameters: { type: "object" } },
     }],
   };
-  assert.equal(requestedFunctionTool(req), null);
-  assert.equal(requestedFunctionTool({ ...req, tool_choice: "auto" }), null);
-  assert.equal(requestedFunctionTool({ ...req, tool_choice: "none" }), null);
-  assert.equal(requestedFunctionTool({ ...req, tool_choice: "required" })?.function.name, "Decision");
+  assert.equal(requestedFunctionTool(schemaReq)?.function.name, "Decision");
+  assert.equal(requestedFunctionTool({ ...schemaReq, tool_choice: "auto" })?.function.name, "Decision");
+  assert.equal(requestedFunctionTool({ ...schemaReq, tool_choice: "none" }), null);
+  assert.equal(requestedFunctionTool({ ...schemaReq, tool_choice: "required" })?.function.name, "Decision");
+
+  const operationalReq = {
+    tools: [{
+      type: "function" as const,
+      function: { name: "get_stock_data", parameters: { type: "object" } },
+    }],
+  };
+  assert.equal(requestedFunctionTool(operationalReq), null);
 });
 
 

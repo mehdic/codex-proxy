@@ -169,10 +169,24 @@ export function requestedFunctionTool(req: Pick<ChatCompletionRequest, "tools" |
   }
 
   if (choice === "required") return tools[0];
-  // For ordinary tool-enabled agent loops, OpenAI clients often omit tool_choice
-  // or set auto. Do not force a tool call in that case; Codex has no native
-  // tool execution bridge yet, and forcing the first tool can create loops.
+
+  // LangChain structured-output calls commonly provide exactly one synthetic
+  // schema function and omit tool_choice / use auto. Ordinary agent tool loops
+  // usually expose operational tools such as get_stock_data/get_news. Force the
+  // single schema-style function so with_structured_output can parse, but do not
+  // force operational tools or multi-tool agent loops.
+  if ((choice === "auto" || choice === undefined) && tools.length === 1 && isSchemaStyleTool(tools[0])) {
+    return tools[0];
+  }
+
   return null;
+}
+
+function isSchemaStyleTool(tool: ChatCompletionTool): boolean {
+  const name = tool.function.name || "";
+  if (/^(get|fetch|search|query|list|read|write|update|delete|create)_/i.test(name)) return false;
+  if (/^(get|fetch|search|query|list|read|write|update|delete|create)[A-Z]/.test(name)) return false;
+  return true;
 }
 
 function appendStructuredOutputInstruction(
