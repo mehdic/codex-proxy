@@ -13,13 +13,15 @@ import type {
   ResponseOutputItem,
   TokenUsage,
   ResponseUsage,
+  ChatCompletionToolCall,
 } from "../types/openai.js";
 import type { TurnResult } from "../subprocess/manager.js";
 import type { TokenUsageBreakdown } from "../types/codex.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function codexUsageToOpenAI(usage: TokenUsageBreakdown | null): TokenUsage {
+export function turnResultUsageToOpenAI(result: TurnResult): TokenUsage {
+  const usage = result.usage;
   const input = usage?.inputTokens ?? 0;
   const output = usage?.outputTokens ?? 0;
   return {
@@ -28,10 +30,15 @@ function codexUsageToOpenAI(usage: TokenUsageBreakdown | null): TokenUsage {
     total_tokens: usage?.totalTokens ?? input + output,
     prompt_tokens_details: { cached_tokens: usage?.cachedInputTokens ?? 0 },
     completion_tokens_details: { reasoning_tokens: usage?.reasoningOutputTokens ?? 0 },
+    estimated: Boolean(result.usageEstimated),
+    estimate_method: result.usageEstimateMethod,
+    cost: result.cost,
+    cost_usd: result.cost?.total_cost_usd,
   };
 }
 
-function codexUsageToResponseUsage(usage: TokenUsageBreakdown | null): ResponseUsage {
+function turnResultUsageToResponseUsage(result: TurnResult): ResponseUsage {
+  const usage = result.usage;
   const input = usage?.inputTokens ?? 0;
   const output = usage?.outputTokens ?? 0;
   return {
@@ -40,6 +47,10 @@ function codexUsageToResponseUsage(usage: TokenUsageBreakdown | null): ResponseU
     total_tokens: usage?.totalTokens ?? input + output,
     input_tokens_details: { cached_tokens: usage?.cachedInputTokens ?? 0 },
     output_tokens_details: { reasoning_tokens: usage?.reasoningOutputTokens ?? 0 },
+    estimated: Boolean(result.usageEstimated),
+    estimate_method: result.usageEstimateMethod,
+    cost: result.cost,
+    cost_usd: result.cost?.total_cost_usd,
   };
 }
 
@@ -120,7 +131,7 @@ export function turnResultToChatCompletion(
         finish_reason: result.finishReason === "error" ? "stop" : result.finishReason,
       },
     ],
-    usage: codexUsageToOpenAI(result.usage),
+    usage: turnResultUsageToOpenAI(result),
   };
 }
 
@@ -153,7 +164,43 @@ export function turnResultToToolCallChatCompletion(
         finish_reason: "tool_calls",
       },
     ],
-    usage: codexUsageToOpenAI(result.usage),
+    usage: turnResultUsageToOpenAI(result),
+  };
+}
+
+
+/** Build a non-streaming chat completion response containing a specific function tool call. */
+export function turnResultToSpecificToolCallChatCompletion(
+  result: TurnResult,
+  model: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): ChatCompletionResponse {
+  return {
+    id: `chatcmpl-${result.turnId}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [makeToolCall(result.turnId, toolName, args)],
+        },
+        finish_reason: "tool_calls",
+      },
+    ],
+    usage: turnResultUsageToOpenAI(result),
+  };
+}
+
+export function makeToolCall(seed: string, toolName: string, args: Record<string, unknown>): ChatCompletionToolCall {
+  return {
+    id: `call_${seed.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32) || uuid()}`,
+    type: "function",
+    function: { name: toolName, arguments: JSON.stringify(args || {}) },
   };
 }
 
@@ -179,6 +226,7 @@ export function makeChatCompletionChunk(
   model: string,
   delta: string | null,
   finishReason: "stop" | "length" | null = null,
+  usage: TokenUsage | null = null,
 ): ChatCompletionChunk {
   return {
     id: `chatcmpl-${id}`,
@@ -190,6 +238,31 @@ export function makeChatCompletionChunk(
         index: 0,
         delta: delta !== null ? { role: "assistant", content: delta } : {},
         finish_reason: finishReason,
+      },
+    ],
+    ...(usage ? { usage } : {}),
+  };
+}
+
+
+export function makeChatToolCallChunk(
+  id: string,
+  model: string,
+  toolCall: ChatCompletionToolCall,
+): ChatCompletionChunk {
+  return {
+    id: `chatcmpl-${id}`,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        delta: {
+          role: "assistant",
+          tool_calls: [{ index: 0, ...toolCall }],
+        },
+        finish_reason: "tool_calls",
       },
     ],
   };
@@ -227,7 +300,7 @@ export function turnResultToResponseObject(
     status: result.finishReason === "error" ? "failed" : "completed",
     output: [outputItem],
     output_text: result.text,
-    usage: codexUsageToResponseUsage(result.usage),
+    usage: turnResultUsageToResponseUsage(result),
     error: result.finishReason === "error"
       ? { message: "Turn failed", code: "server_error" }
       : null,

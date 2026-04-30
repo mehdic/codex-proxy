@@ -6,6 +6,8 @@
  */
 
 import { canonicalModelLabel } from "../adapter/openai-to-codex.js";
+import type { TokenUsageBreakdown } from "../types/codex.js";
+import type { UsageCostEstimate } from "./pricing.js";
 
 type EndpointLabel = "chat" | "chat_completions" | "responses" | "models" | "health" | "metrics" | "other";
 type StatusLabel = "ok" | "error";
@@ -62,6 +64,8 @@ const subprocessExits: Record<ExitReason, number> = {
   killed: 0,
   unknown: 0,
 };
+const tokenCounters: Record<string, number> = {};
+const costCounters: Record<string, number> = {};
 
 const REQUEST_BUCKETS_MS = [100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000];
 const ENDPOINTS = new Set<EndpointLabel>(["chat", "chat_completions", "responses", "models", "health", "metrics", "other"]);
@@ -118,6 +122,16 @@ export function recordFallback(reason: string): void {
 export function recordSessionEvent(event: string): void {
   const label = canonicalSessionEvent(event);
   sessionEvents[label]++;
+}
+
+export function recordTokenUsage(model: string, usage: TokenUsageBreakdown, cost: UsageCostEstimate | undefined, estimated: boolean): void {
+  const labels = { model: canonicalModelLabel(model), estimated: estimated ? "true" : "false" };
+  addLabeled(tokenCounters, "codex_proxy_tokens_total", usage.inputTokens || 0, { ...labels, direction: "input" });
+  addLabeled(tokenCounters, "codex_proxy_tokens_total", usage.cachedInputTokens || 0, { ...labels, direction: "cached_input" });
+  addLabeled(tokenCounters, "codex_proxy_tokens_total", usage.outputTokens || 0, { ...labels, direction: "output" });
+  addLabeled(tokenCounters, "codex_proxy_tokens_total", usage.reasoningOutputTokens || 0, { ...labels, direction: "reasoning_output" });
+  addLabeled(tokenCounters, "codex_proxy_tokens_total", usage.totalTokens || 0, { ...labels, direction: "total" });
+  if (cost) addLabeled(costCounters, "codex_proxy_estimated_cost_usd_total", cost.total_cost_usd, labels);
 }
 
 export function setPoolSize(size: number): void {
@@ -211,6 +225,11 @@ function labeledKey(name: string, labels?: Record<string, string>): string {
   return `${name}{${parts}}`;
 }
 
+function addLabeled(target: Record<string, number>, name: string, value: number, labels?: Record<string, string>): void {
+  const key = labeledKey(name, sanitizeLabels(labels));
+  target[key] = (target[key] || 0) + Math.max(0, Number(value) || 0);
+}
+
 export function renderMetrics(): string {
   const lines: string[] = [];
 
@@ -252,6 +271,14 @@ export function renderMetrics(): string {
       lines.push(`${key}_count ${count}`);
     }
   }
+
+  lines.push("# HELP codex_proxy_tokens_total Total tokens reported or estimated by the proxy");
+  lines.push("# TYPE codex_proxy_tokens_total counter");
+  for (const [key, val] of Object.entries(tokenCounters)) lines.push(`${key} ${val}`);
+
+  lines.push("# HELP codex_proxy_estimated_cost_usd_total Estimated cost in USD using public per-model API prices");
+  lines.push("# TYPE codex_proxy_estimated_cost_usd_total counter");
+  for (const [key, val] of Object.entries(costCounters)) lines.push(`${key} ${val.toFixed(6)}`);
 
   lines.push("# HELP codex_proxy_subprocess_exits_total Codex app-server subprocess exits");
   lines.push("# TYPE codex_proxy_subprocess_exits_total counter");
@@ -297,6 +324,8 @@ export function resetMetrics(): void {
   for (const key of Object.keys(counters)) delete counters[key];
   for (const key of Object.keys(histogramSums)) delete histogramSums[key];
   for (const key of Object.keys(histogramCounts)) delete histogramCounts[key];
+  for (const key of Object.keys(tokenCounters)) delete tokenCounters[key];
+  for (const key of Object.keys(costCounters)) delete costCounters[key];
   requestRecords.clear();
   for (const key of Object.keys(poolEvents) as PoolEvent[]) poolEvents[key] = 0;
   for (const key of Object.keys(fallbacks) as FallbackReason[]) fallbacks[key] = 0;

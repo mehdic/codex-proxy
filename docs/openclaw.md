@@ -1,6 +1,10 @@
 # OpenClaw
 
-`codex-proxy` can be used as a local OpenAI-compatible provider in OpenClaw. The proxy should run on localhost and Codex CLI should own all authentication.
+`codex-proxy` (v0.4.4) can be used as a local OpenAI-compatible provider in OpenClaw. The proxy should run on localhost and Codex CLI should own all authentication.
+
+## Tool bridge semantics
+
+When OpenClaw sends tools in a chat completion request, the proxy describes them to Codex as **external caller-dispatched tools** that require returning `tool_call` JSON for OpenClaw to dispatch. The proxy does not execute these tools. Codex retains its own native capabilities/tools from the Codex app-server session and may use them when sufficient, so OpenClaw-dispatched tools and Codex-native capabilities combine into a larger effective tool range instead of replacing one another.
 
 ## Start the proxy
 
@@ -49,6 +53,10 @@ Add a provider similar to this in your OpenClaw model configuration:
 ```
 
 If your OpenClaw build supports the Responses API, use the same `baseUrl` with `/v1/responses`. Chat completions remain the most compatible path.
+
+## Usage and cost estimates
+
+Codex app-server token usage is mapped into OpenAI-compatible `usage` fields. When app-server usage is missing, the proxy estimates token counts locally and marks `usage.estimated=true`. The proxy also exposes simulated normal API-cost estimates in `usage.cost` / `usage.cost_usd`, response headers such as `X-Codex-Proxy-Total-Tokens` and `X-Codex-Proxy-Estimated-Cost-Usd`, Prometheus metrics, and `/pricing` / `/v1/pricing` for the pricing book. These are operational estimates only; Codex CLI/app-server still owns auth and subscription entitlement.
 
 ## Usage guidance
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chatMessagesToPrompt, chatRequestToOptions, requestedFunctionTool, responsesRequestToOptions } from "../adapter/openai-to-codex.js";
+import { chatMessagesToPrompt, chatRequestToOptions, extractProxyToolCall, requestedFunctionTool, responsesRequestToOptions, shouldEmulateOperationalTools } from "../adapter/openai-to-codex.js";
 import {
   appendAssistantText,
   extractDeltaText,
@@ -8,6 +8,7 @@ import {
   makeResponseTextDoneEvent,
   turnResultToChatCompletion,
   turnResultToToolCallChatCompletion,
+  turnResultToSpecificToolCallChatCompletion,
   turnResultToResponseObject,
   chunkToSSE,
 } from "../adapter/codex-to-openai.js";
@@ -25,6 +26,17 @@ test("chatMessagesToPrompt separates first system instruction", () => {
   assert.match(converted.prompt, /Hello/);
   assert.match(converted.prompt, /<previous_response>\nHi\n<\/previous_response>/);
   assert.match(converted.prompt, /Continue/);
+});
+
+
+test("chatMessagesToPrompt preserves tool results for follow-up turns", () => {
+  const converted = chatMessagesToPrompt([
+    { role: "user", content: "List n8n workflows" },
+    { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "n8n__n8n_list_workflows", arguments: "{\"limit\":100}" } }] },
+    { role: "tool", tool_call_id: "call_1", name: "n8n__n8n_list_workflows", content: "{\"success\":true,\"data\":{\"returned\":41}}" },
+  ]);
+  assert.match(converted.prompt, /<tool_result name="n8n__n8n_list_workflows" tool_call_id="call_1">/);
+  assert.match(converted.prompt, /returned/);
 });
 
 test("chatRequestToOptions uses requested model", () => {
@@ -213,6 +225,133 @@ test("requestedFunctionTool forces single schema-style structured output but not
   assert.equal(requestedFunctionTool(operationalReq), null);
 });
 
+
+
+test("chatRequestToOptions adds operational tool bridge instructions", () => {
+  const { prompt } = chatRequestToOptions({
+    model: "gpt-5.4-mini",
+    messages: [{ role: "user", content: "List n8n workflows" }],
+    tools: [{
+      type: "function",
+      function: {
+        name: "n8n__n8n_list_workflows",
+        description: "List workflows",
+        parameters: { type: "object", properties: { limit: { type: "number" } } },
+      },
+    }],
+  });
+  assert.match(prompt, /codex_proxy_openai_tools/);
+  assert.match(prompt, /n8n__n8n_list_workflows/);
+  assert.match(prompt, /"tool_call"/);
+  // Composability: bridge describes external caller-dispatched tools without suppressing Codex native capabilities.
+  assert.match(prompt, /external tool/i);
+  assert.match(prompt, /native Codex capabilities/i);
+  assert.match(prompt, /in addition to your native Codex capabilities/i);
+  assert.match(prompt, /Do not treat this bridge as replacing or disabling Codex-native tools\/capabilities/i);
+  assert.doesNotMatch(prompt, /You cannot execute tools yourself/);
+});
+
+test("operational tool bridge preserves Codex native capability composability", () => {
+  const { prompt } = chatRequestToOptions({
+    model: "gpt-5.5",
+    messages: [{ role: "user", content: "Read my file and then call n8n" }],
+    tools: [
+      { type: "function", function: { name: "n8n__n8n_list_workflows", description: "List workflows", parameters: { type: "object" } } },
+      { type: "function", function: { name: "search_web", description: "Search the web", parameters: { type: "object" } } },
+    ],
+  });
+  // Should list tools as external
+  assert.match(prompt, /External tools:/);
+  // Should explicitly preserve and combine the model's own Codex capabilities with caller-dispatched tools.
+  assert.match(prompt, /in addition to your native Codex capabilities/);
+  assert.match(prompt, /replacing or disabling Codex-native tools\/capabilities/);
+  // Should still tell model to use JSON shape for external tools.
+  assert.match(prompt, /dispatched by the caller/);
+});
+
+test("extractProxyToolCall parses operational tool bridge JSON", () => {
+  const req = {
+    tools: [{
+      type: "function" as const,
+      function: { name: "n8n__n8n_list_workflows", parameters: { type: "object" } },
+    }],
+  };
+  assert.equal(shouldEmulateOperationalTools(req), true);
+  const call = extractProxyToolCall('{"tool_call":{"name":"n8n__n8n_list_workflows","arguments":{"limit":100}}}', req);
+  assert.equal(call?.name, "n8n__n8n_list_workflows");
+  assert.deepEqual(call?.arguments, { limit: 100 });
+  assert.equal(extractProxyToolCall('{"tool_call":{"name":"evil","arguments":{}}}', req), null);
+});
+
+test("extractProxyToolCall handles prose-prefixed tool_call JSON", () => {
+  const req = {
+    tools: [{
+      type: "function" as const,
+      function: { name: "n8n__n8n_list_workflows", parameters: { type: "object" } },
+    }],
+  };
+  const text = 'I\'m going to use the n8n tool to list your workflows. {"tool_call":{"name":"n8n__n8n_list_workflows","arguments":{"limit":5}}}';
+  const call = extractProxyToolCall(text, req);
+  assert.equal(call?.name, "n8n__n8n_list_workflows");
+  assert.deepEqual(call?.arguments, { limit: 5 });
+});
+
+test("extractProxyToolCall handles duplicate adjacent tool_call JSON objects", () => {
+  const req = {
+    tools: [
+      { type: "function" as const, function: { name: "n8n__n8n_list_workflows", parameters: { type: "object" } } },
+      { type: "function" as const, function: { name: "n8n__n8n_get_workflow", parameters: { type: "object" } } },
+    ],
+  };
+  // Model returned prose + two JSON objects back to back
+  const text = 'I\'m using the tools now. {"tool_call":{"name":"n8n__n8n_list_workflows","arguments":{"limit":5}}}{"tool_call":{"name":"n8n__n8n_get_workflow","arguments":{"id":42}}}';
+  const call = extractProxyToolCall(text, req);
+  // Should extract the first valid one
+  assert.equal(call?.name, "n8n__n8n_list_workflows");
+  assert.deepEqual(call?.arguments, { limit: 5 });
+});
+
+test("extractProxyToolCall skips non-tool JSON objects in prose", () => {
+  const req = {
+    tools: [{
+      type: "function" as const,
+      function: { name: "n8n__n8n_list_workflows", parameters: { type: "object" } },
+    }],
+  };
+  // First JSON object is not a tool_call, second one is
+  const text = 'Here is some context {"info":"stuff"} and now {"tool_call":{"name":"n8n__n8n_list_workflows","arguments":{"limit":10}}}';
+  const call = extractProxyToolCall(text, req);
+  assert.equal(call?.name, "n8n__n8n_list_workflows");
+  assert.deepEqual(call?.arguments, { limit: 10 });
+});
+
+test("extractProxyToolCall still works with code-fenced JSON", () => {
+  const req = {
+    tools: [{
+      type: "function" as const,
+      function: { name: "n8n__n8n_list_workflows", parameters: { type: "object" } },
+    }],
+  };
+  const text = '```json\n{"tool_call":{"name":"n8n__n8n_list_workflows","arguments":{"limit":3}}}\n```';
+  const call = extractProxyToolCall(text, req);
+  assert.equal(call?.name, "n8n__n8n_list_workflows");
+  assert.deepEqual(call?.arguments, { limit: 3 });
+});
+
+test("turnResultToSpecificToolCallChatCompletion wraps explicit operational tool args", () => {
+  const turn: TurnResult = {
+    text: '{"tool_call":{"name":"n8n__n8n_list_workflows","arguments":{"limit":100}}}',
+    turnId: "turn_operational_tool",
+    threadId: "thread_1",
+    usage: null,
+    durationMs: 10,
+    finishReason: "stop",
+  };
+  const response = turnResultToSpecificToolCallChatCompletion(turn, "gpt-5.4-mini", "n8n__n8n_list_workflows", { limit: 100 });
+  assert.equal(response.choices[0].finish_reason, "tool_calls");
+  assert.equal(response.choices[0].message.tool_calls?.[0].function.name, "n8n__n8n_list_workflows");
+  assert.deepEqual(JSON.parse(response.choices[0].message.tool_calls?.[0].function.arguments || "{}"), { limit: 100 });
+});
 
 test("turnResultToToolCallChatCompletion wraps JSON as OpenAI tool_calls", () => {
   const turn: TurnResult = {

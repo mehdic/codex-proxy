@@ -21,7 +21,7 @@ This follows the same philosophy as [`claude-proxy`](https://github.com/mehdic/c
 
 ## Status
 
-v0.4 local proxy. Working locally with:
+v0.4.4 local proxy. Working locally with:
 
 - non-streaming `/v1/chat/completions`
 - streaming `/v1/chat/completions`
@@ -38,6 +38,7 @@ v0.4 local proxy. Working locally with:
 - one-shot fallback mode
 - SSE keepalive comments for streaming clients with writable-guard hardening
 - env-gated localhost CORS
+- composable operational tool bridge (external tools via OpenClaw coexist with Codex native capabilities)
 
 The implementation intentionally avoids the experimental Codex WebSocket transport.
 
@@ -142,6 +143,7 @@ The smoke script uses localhost only and checks `/health`, `/v1/models`, one non
 | `/version` | GET | Package name and runtime version |
 | `/healthz/deep` | GET | Starts Codex and runs a tiny turn with `CODEX_PROXY_HEALTH_MODEL` or the default model |
 | `/metrics` | GET | Prometheus-style metrics |
+| `/pricing`, `/v1/pricing` | GET | Public fallback pricing book used for local cost estimates |
 | `/models`, `/v1/models` | GET | OpenAI model list |
 | `/chat/completions`, `/v1/chat/completions` | POST | OpenAI chat-completions-compatible API |
 | `/responses`, `/v1/responses` | POST | Minimal OpenAI Responses-style API |
@@ -154,8 +156,10 @@ Codex app-server reports latest-turn usage through official `thread/tokenUsage/u
 
 - Chat Completions: `prompt_tokens`, `completion_tokens`, `total_tokens`, `prompt_tokens_details.cached_tokens`, and `completion_tokens_details.reasoning_tokens`.
 - Responses: `input_tokens`, `output_tokens`, `total_tokens`, `input_tokens_details.cached_tokens`, and `output_tokens_details.reasoning_tokens`.
+- Local cost estimates: `usage.cost`, `usage.cost_usd`, `usage.estimated`, and `usage.estimate_method`.
+- Non-streaming response headers: `X-Codex-Proxy-Prompt-Tokens`, `X-Codex-Proxy-Completion-Tokens`, `X-Codex-Proxy-Total-Tokens`, `X-Codex-Proxy-Usage-Estimated`, and `X-Codex-Proxy-Estimated-Cost-Usd`.
 
-Codex does not currently expose Claude-style prompt cache creation/write token counts through app-server, so `cacheWrite`-style accounting is not available here.
+If Codex does not report usage, the proxy falls back to a conservative local token estimate (`chars / 4` with a word-count floor). Cost is a simulated normal API-cost estimate from public pricing, not actual billing for the Codex subscription/app-server path. Codex does not currently expose Claude-style prompt cache creation/write token counts through app-server, so `cacheWrite`-style accounting is not available here.
 
 ## Models
 
@@ -232,6 +236,7 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 - [macOS LaunchAgent](docs/macos-launchagent.md)
 - [OpenClaw provider setup](docs/openclaw.md)
 - [Model and protocol drift](MODEL_DRIFT.md)
+- [Release & soak checklist](scripts/release-checklist.sh)
 
 ## Security model
 
@@ -257,19 +262,29 @@ Run live smoke after starting the server:
 npm run smoke
 ```
 
+## Tool calling
+
+The proxy supports two tool-calling modes:
+
+1. **Structured output** (single schema-style function, e.g. LangChain `with_structured_output`): the proxy injects a JSON-schema conformance instruction and returns the result as a standard `tool_calls` response.
+2. **Operational tool bridge** (multi-tool agent loops, e.g. OpenClaw MCP tools): the proxy describes caller-dispatched external tools in the prompt and instructs the model to return `{"tool_call":{...}}` JSON when one of those external tools is needed. The proxy does **not** execute these tools — the caller (OpenClaw, LangChain, etc.) dispatches them and sends results back as `tool` messages. Codex keeps its native capabilities/tools as provided by the Codex app-server session and may use them alongside or instead of external tool calls when they are sufficient.
+
+This composable design ensures OpenClaw-dispatched tools and Codex-native capabilities are combined into a larger effective tool range rather than one suppressing or replacing the other.
+
 ## Roadmap
 
 - Better `/v1/responses` compatibility for additional content parts and event aliases.
 - More schema-drift fixtures for Codex app-server notifications and session thread reuse.
-- Expanded operational docs for launchd, systemd, and client integrations.
 - Optional local auth layer for non-loopback deployments.
+- Parallel tool calls (multiple `tool_calls` in a single response).
 
 ## Caveats
 
 - Codex app-server is JSON-RPC and agent-oriented; this proxy maps it into OpenAI-ish response shapes.
 - `/v1/responses` is still minimal and text-only.
-- Tool calls, images, approvals, and durable cross-process sessions are not implemented yet.
+- Images, approvals, and durable cross-process sessions are not implemented yet.
 - The proxy uses stdio transport. Codex WebSocket transport is documented as experimental/unsupported, so it is intentionally avoided.
+- Operational tool bridge currently returns one tool call per turn; parallel tool calls are a roadmap item.
 
 ## License
 

@@ -63,6 +63,12 @@ export function chatMessagesToPrompt(messages: ChatMessage[]): {
       case "assistant":
         parts.push(`<previous_response>\n${text}\n</previous_response>\n`);
         break;
+      case "tool": {
+        const toolName = msg.name || "unknown";
+        const toolCallId = msg.tool_call_id || "unknown";
+        parts.push(`<tool_result name="${escapeXmlAttribute(toolName)}" tool_call_id="${escapeXmlAttribute(toolCallId)}">\n${text}\n</tool_result>\n`);
+        break;
+      }
       case "user":
         parts.push(text);
         break;
@@ -84,7 +90,7 @@ export function chatRequestToOptions(
 ): { prompt: string; options: CodexSubprocessOptions } {
   const model = resolveModel(req.model);
   const { prompt, systemInstruction } = chatMessagesToPrompt(req.messages);
-  const finalPrompt = appendStructuredOutputInstruction(prompt, req);
+  const finalPrompt = appendToolInstructions(appendStructuredOutputInstruction(prompt, req), req);
 
   return {
     prompt: finalPrompt,
@@ -119,7 +125,7 @@ export function responsesRequestToOptions(
   }
 
   return {
-    prompt: appendStructuredOutputInstruction(prompt, req),
+    prompt: appendToolInstructions(appendStructuredOutputInstruction(prompt, req), req),
     options: {
       model,
       instructions: req.instructions || defaults?.instructions,
@@ -184,9 +190,128 @@ export function requestedFunctionTool(req: Pick<ChatCompletionRequest, "tools" |
 
 function isSchemaStyleTool(tool: ChatCompletionTool): boolean {
   const name = tool.function.name || "";
+  if (name.includes("__")) return false;
   if (/^(get|fetch|search|query|list|read|write|update|delete|create)_/i.test(name)) return false;
   if (/^(get|fetch|search|query|list|read|write|update|delete|create)[A-Z]/.test(name)) return false;
   return true;
+}
+
+export interface ProxyToolCallRequest {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export function shouldEmulateOperationalTools(req: Pick<ChatCompletionRequest, "tools" | "tool_choice">): boolean {
+  if (requestedFunctionTool(req)) return false;
+  if (req.tool_choice === "none") return false;
+  return (req.tools || []).some((tool) => tool.type === "function" && tool.function?.name);
+}
+
+export function extractProxyToolCall(text: string, req: Pick<ChatCompletionRequest, "tools" | "tool_choice">): ProxyToolCallRequest | null {
+  if (!shouldEmulateOperationalTools(req)) return null;
+  const allowed = new Set((req.tools || []).filter((tool) => tool.type === "function").map((tool) => tool.function.name));
+
+  // Scan all top-level JSON objects in the text (handles prose, code fences, duplicates).
+  for (const obj of iterJsonObjects(text)) {
+    const candidate = obj.tool_call;
+    if (!candidate || typeof candidate !== "object") continue;
+    const call = candidate as Record<string, unknown>;
+    if (typeof call.name !== "string" || !allowed.has(call.name)) continue;
+    const args = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
+      ? call.arguments as Record<string, unknown>
+      : {};
+    return { name: call.name, arguments: args };
+  }
+  return null;
+}
+
+function appendToolInstructions(
+  prompt: string,
+  req: Pick<ChatCompletionRequest, "tools" | "tool_choice">,
+): string {
+  if (!shouldEmulateOperationalTools(req)) return prompt;
+  const tools = (req.tools || [])
+    .filter((tool) => tool.type === "function" && tool.function?.name)
+    .map((tool) => ({
+      name: tool.function.name,
+      description: tool.function.description || "",
+      parameters: tool.function.parameters || { type: "object" },
+    }));
+
+  return `${prompt}
+
+<codex_proxy_openai_tools>
+The following external OpenAI/OpenClaw tools are available in addition to your native Codex capabilities.
+These external tools are dispatched by the caller (e.g. OpenClaw); the proxy will not execute them for you.
+To request one external tool, return ONLY a valid JSON object in this exact shape:
+{"tool_call":{"name":"tool_name","arguments":{}}}
+Use one of the external tool names listed below and fill arguments according to its schema.
+Do not treat this bridge as replacing or disabling Codex-native tools/capabilities. Use your native Codex capabilities whenever they are useful, and request an external OpenAI/OpenClaw tool only when the caller-dispatched tool is the right source or action.
+If a <tool_result> is present, consume it to answer the user's request; do NOT repeat the same external tool call unless the user explicitly asks for another call.
+If no external tool is needed, answer normally and do not use this JSON shape.
+External tools:
+${JSON.stringify(tools)}
+</codex_proxy_openai_tools>`;
+}
+
+/**
+ * Yield every top-level JSON object found in `text`, scanning left-to-right.
+ * Handles prose surrounding objects, adjacent objects without whitespace, and
+ * code-fenced blocks.  Brace-balances to find each object boundary rather than
+ * relying on lastIndexOf("}").
+ */
+function* iterJsonObjects(text: string): Generator<Record<string, unknown>> {
+  // Strip code fences so the scanner sees raw JSON.
+  const stripped = text.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1");
+  let pos = 0;
+  while (pos < stripped.length) {
+    const start = stripped.indexOf("{", pos);
+    if (start === -1) break;
+
+    // Brace-balance scan: track depth, respecting JSON strings.
+    let depth = 0;
+    let end = -1;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < stripped.length; i++) {
+      const ch = stripped[i];
+      if (escape) { escape = false; continue; }
+      if (ch === "\\" && inString) { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end === -1) break; // unbalanced — give up
+
+    const slice = stripped.slice(start, end + 1);
+    try {
+      const parsed = JSON.parse(slice);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        yield parsed as Record<string, unknown>;
+      }
+    } catch { /* not valid JSON despite balanced braces — skip */ }
+    pos = end + 1;
+  }
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced ? fenced[1] : trimmed).trim();
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    const parsed = JSON.parse(candidate.slice(start, end + 1));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
 }
 
 function appendStructuredOutputInstruction(
@@ -230,6 +355,15 @@ ${schema}
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 function extractMessageText(msg: ChatMessage): string {
   if (typeof msg.content === "string") return msg.content;

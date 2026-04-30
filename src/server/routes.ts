@@ -11,11 +11,17 @@ import {
   responsesRequestToOptions,
   canonicalModelLabel,
   requestedFunctionTool,
+  shouldEmulateOperationalTools,
+  extractProxyToolCall,
 } from "../adapter/openai-to-codex.js";
 import {
   turnResultToChatCompletion,
   turnResultToToolCallChatCompletion,
+  turnResultToSpecificToolCallChatCompletion,
+  makeToolCall,
+  makeChatToolCallChunk,
   makeChatCompletionChunk,
+  turnResultUsageToOpenAI,
   chunkToSSE,
   SSE_DONE,
   turnResultToResponseObject,
@@ -32,6 +38,8 @@ import { incCounter, observeHistogram, recordFallback, recordRequest, renderMetr
 import { CONFIG } from "./config.js";
 import { CodexProxyError, invalidRequestError, mapErrorToHttp } from "./errors.js";
 import { NAME, VERSION } from "./version.js";
+import { annotateTurnUsage } from "./usage.js";
+import { pricingSnapshot } from "./pricing.js";
 import type { ChatCompletionRequest, ResponseRequest, ModelObject, ModelListResponse } from "../types/openai.js";
 
 type EndpointName = "chat_completions" | "responses";
@@ -113,6 +121,13 @@ export function createRouter(): Router {
   router.get("/models", handleModels);
   router.get("/v1/models", handleModels);
 
+  // Public price book used for local cost estimates.
+  const handlePricing = (_req: Request, res: Response) => {
+    res.json({ object: "pricing_book", ...pricingSnapshot() });
+  };
+  router.get("/pricing", handlePricing);
+  router.get("/v1/pricing", handlePricing);
+
   // Chat completions
   const handleChatCompletions = async (req: Request, res: Response) => {
     const body = req.body as ChatCompletionRequest;
@@ -164,9 +179,10 @@ export function createRouter(): Router {
         });
 
         const streamId = requestId;
+        const emulateTools = shouldEmulateOperationalTools(body);
         let result: TurnResult;
         try {
-          result = await runTurn(prompt, options, runtime, "chat_completions", (delta) => {
+          result = await runTurn(prompt, options, runtime, "chat_completions", emulateTools ? undefined : (delta) => {
             const chunk = makeChatCompletionChunk(streamId, model, delta);
             safeWrite(chunkToSSE(chunk));
             lastStreamWrite = Date.now();
@@ -175,10 +191,19 @@ export function createRouter(): Router {
           if (keepalive) clearInterval(keepalive);
         }
         status = "ok";
+        annotateTurnUsage(result, prompt, model);
 
-        // Final chunk with finish_reason
-        const finalChunk = makeChatCompletionChunk(streamId, model, null, "stop");
-        safeWrite(chunkToSSE(finalChunk));
+        const proxyToolCall = emulateTools ? extractProxyToolCall(result.text, body) : null;
+        if (proxyToolCall) {
+          const toolCall = makeToolCall(result.turnId, proxyToolCall.name, proxyToolCall.arguments);
+          safeWrite(chunkToSSE(makeChatToolCallChunk(streamId, model, toolCall)));
+        } else {
+          if (emulateTools && result.text) {
+            safeWrite(chunkToSSE(makeChatCompletionChunk(streamId, model, result.text)));
+          }
+          const finalChunk = makeChatCompletionChunk(streamId, model, null, "stop", turnResultUsageToOpenAI(result));
+          safeWrite(chunkToSSE(finalChunk));
+        }
         safeWrite(SSE_DONE);
         lastStreamWrite = Date.now();
         res.end();
@@ -197,11 +222,16 @@ export function createRouter(): Router {
           abortController.signal,
           session.kind === "session" ? session.sessionId : undefined,
         );
+        annotateTurnUsage(result, prompt, model);
         const requestedTool = requestedFunctionTool(body);
-        const response = requestedTool
-          ? turnResultToToolCallChatCompletion(result, model, requestedTool.function.name)
-          : turnResultToChatCompletion(result, model);
+        const proxyToolCall = extractProxyToolCall(result.text, body);
+        const response = proxyToolCall
+          ? turnResultToSpecificToolCallChatCompletion(result, model, proxyToolCall.name, proxyToolCall.arguments)
+          : requestedTool
+            ? turnResultToToolCallChatCompletion(result, model, requestedTool.function.name)
+            : turnResultToChatCompletion(result, model);
         status = "ok";
+        setUsageHeaders(res, result);
         res.json(response);
 
         if (result.durationMs) {
@@ -316,6 +346,7 @@ export function createRouter(): Router {
           if (keepalive) clearInterval(keepalive);
         }
         status = "ok";
+        annotateTurnUsage(result, prompt, model);
 
         // output_text.done
         safeWrite(makeResponseTextDoneEvent(0, 0, result.text));
@@ -361,8 +392,10 @@ export function createRouter(): Router {
           abortController.signal,
           session.kind === "session" ? session.sessionId : undefined,
         );
+        annotateTurnUsage(result, prompt, model);
         const response = turnResultToResponseObject(result, model);
         status = "ok";
+        setUsageHeaders(res, result);
         res.json(response);
 
         if (result.durationMs) {
@@ -386,6 +419,15 @@ export function createRouter(): Router {
   router.post("/v1/responses", handleResponses);
 
   return router;
+}
+
+function setUsageHeaders(res: Response, result: TurnResult): void {
+  if (!result.usage) return;
+  res.setHeader("X-Codex-Proxy-Prompt-Tokens", String(result.usage.inputTokens || 0));
+  res.setHeader("X-Codex-Proxy-Completion-Tokens", String(result.usage.outputTokens || 0));
+  res.setHeader("X-Codex-Proxy-Total-Tokens", String(result.usage.totalTokens || 0));
+  res.setHeader("X-Codex-Proxy-Usage-Estimated", result.usageEstimated ? "true" : "false");
+  if (result.cost) res.setHeader("X-Codex-Proxy-Estimated-Cost-Usd", result.cost.total_cost_usd.toFixed(6));
 }
 
 async function runTurn(

@@ -19,56 +19,19 @@ codex exec "Reply OK only."
 
 ## 2. Create the plist
 
-Save this as `~/Library/LaunchAgents/com.mehdic.codex-proxy.plist`:
-
-> Replace `/Users/YOUR_USER` with your actual home directory before loading the plist.
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.mehdic.codex-proxy</string>
-
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/node</string>
-    <string>/Users/YOUR_USER/.openclaw/projects/codex-proxy/dist/server/standalone.js</string>
-  </array>
-
-  <key>WorkingDirectory</key>
-  <string>/Users/YOUR_USER/.openclaw/projects/codex-proxy</string>
-
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>CODEX_PROXY_HOST</key>
-    <string>127.0.0.1</string>
-    <key>CODEX_PROXY_PORT</key>
-    <string>3466</string>
-  </dict>
-
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-
-  <key>StandardOutPath</key>
-  <string>/tmp/codex-proxy.out.log</string>
-  <key>StandardErrorPath</key>
-  <string>/tmp/codex-proxy.err.log</string>
-</dict>
-</plist>
-```
-
-Adjust the Node path if your machine uses Homebrew on Apple Silicon:
+A reusable plist template is provided at `launchagents/com.mehdic.codex-proxy.plist`. You can install it with the provided script:
 
 ```bash
-which node
+scripts/install-launchagent.sh
 ```
 
-Use the returned path in `ProgramArguments`.
+Or copy the template manually:
+
+```bash
+cp launchagents/com.mehdic.codex-proxy.plist ~/Library/LaunchAgents/
+```
+
+> The install script auto-detects your nvm Node path and home directory. If you prefer a manual setup, replace `__NODE_PATH__` and `__HOME__` in the template before loading.
 
 ## 3. Load and inspect
 
@@ -90,8 +53,16 @@ Unload:
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.mehdic.codex-proxy.plist
 ```
 
+## Log locations
+
+The plist routes logs to `~/.openclaw/logs/`:
+
+- `~/.openclaw/logs/codex-proxy-stdout.log`
+- `~/.openclaw/logs/codex-proxy-stderr.log`
+
 ## Notes
 
 - Do not put Codex OAuth tokens or auth files in the plist.
 - Keep `CODEX_PROXY_HOST=127.0.0.1` unless you add your own network-layer access control.
 - `/health` is cheap. `/healthz/deep` starts Codex and runs a tiny turn, so use it for manual readiness checks rather than high-frequency polling.
+- The plist uses the nvm-managed Node path by convention. If you use a different Node installation, update `ProgramArguments` accordingly.

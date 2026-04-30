@@ -40,9 +40,11 @@ export type ResponseFormat =
   | { type: "json_schema"; json_schema: { name?: string; schema?: Record<string, unknown>; strict?: boolean } };
 
 export interface ChatMessage {
-  role: "system" | "user" | "assistant" | "developer";
+  role: "system" | "user" | "assistant" | "developer" | "tool";
   content: string | ContentPart[] | null;
   tool_calls?: ChatCompletionToolCall[];
+  tool_call_id?: string;
+  name?: string;
 }
 
 export interface ContentPart {
@@ -86,8 +88,25 @@ export interface ChatCompletionChunk {
 
 export interface ChatCompletionChunkChoice {
   index: number;
-  delta: { role?: "assistant"; content?: string };
-  finish_reason: "stop" | "length" | null;
+  delta: { role?: "assistant"; content?: string; tool_calls?: Array<ChatCompletionToolCall & { index: number }> };
+  finish_reason: "stop" | "length" | "tool_calls" | null;
+}
+
+export interface UsageCostEstimate {
+  currency: "USD";
+  total_cost_usd: number;
+  input_cost_usd: number;
+  cached_input_cost_usd: number;
+  output_cost_usd: number;
+  model: string;
+  pricing: {
+    input_per_1m: number;
+    cached_input_per_1m: number;
+    output_per_1m: number;
+    source: string;
+    updated_at: string;
+    note?: string;
+  };
 }
 
 export interface TokenUsage {
@@ -100,6 +119,10 @@ export interface TokenUsage {
   completion_tokens_details?: {
     reasoning_tokens?: number;
   };
+  estimated?: boolean;
+  estimate_method?: string;
+  cost?: UsageCostEstimate;
+  cost_usd?: number;
 }
 
 export interface ResponseUsage {
@@ -112,6 +135,10 @@ export interface ResponseUsage {
   output_tokens_details?: {
     reasoning_tokens?: number;
   };
+  estimated?: boolean;
+  estimate_method?: string;
+  cost?: UsageCostEstimate;
+  cost_usd?: number;
 }
 
 // ── Responses API ───────────────────────────────────────────────────

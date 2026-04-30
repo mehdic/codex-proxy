@@ -19,6 +19,7 @@ import { CONFIG } from "../server/config.js";
 import { CodexProxyError } from "../server/errors.js";
 import { recordSubprocessExit } from "../server/metrics.js";
 import { VERSION } from "../server/version.js";
+import type { UsageCostEstimate } from "../server/pricing.js";
 import type {
   RequestId,
   InitializeResponse,
@@ -58,6 +59,9 @@ export interface TurnResult {
   turnId: string;
   threadId: string;
   usage: TokenUsageBreakdown | null;
+  usageEstimated?: boolean;
+  usageEstimateMethod?: "codex_app_server" | "heuristic_chars_div_4";
+  cost?: UsageCostEstimate;
   durationMs: number | null;
   finishReason: "stop" | "length" | "error";
 }
