@@ -1,2 +1,2 @@
 export const NAME = "codex-proxy";
-export const VERSION = "0.4.5";
+export const VERSION = "0.4.6";

@@ -11,6 +11,7 @@ import type {
   ChatMessage,
   ResponseRequest,
   ResponseInputItem,
+  ResponseContentPart,
   ChatCompletionTool,
 } from "../types/openai.js";
 import type { CodexSubprocessOptions } from "../subprocess/manager.js";
@@ -141,13 +142,9 @@ export function responsesRequestToOptions(
 function responsesInputToPrompt(items: ResponseInputItem[]): string {
   const parts: string[] = [];
   for (const item of items) {
-    const text =
-      typeof item.content === "string"
-        ? item.content
-        : item.content
-            .map((p) => p.text)
-            .filter(Boolean)
-            .join("\n");
+    const text = typeof item.content === "string"
+      ? item.content
+      : responseContentPartsToText(item.content);
 
     switch (item.role) {
       case "system":
@@ -158,11 +155,78 @@ function responsesInputToPrompt(items: ResponseInputItem[]): string {
         parts.push(`<previous_response>\n${text}\n</previous_response>\n`);
         break;
       case "user":
+      default:
         parts.push(text);
         break;
     }
   }
   return parts.join("\n");
+}
+
+function responseContentPartsToText(parts: ResponseContentPart[]): string {
+  return parts
+    .map((part) => responseContentPartToText(part))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function responseContentPartToText(part: ResponseContentPart): string {
+  if (!part || typeof part !== "object") return "";
+  const p = part as Record<string, unknown>;
+
+  if ((p.type === "input_text" || p.type === "output_text" || p.type === "text") && typeof p.text === "string") {
+    return p.text;
+  }
+
+  if ((p.type === "input_image" || p.type === "image_url")) {
+    const imageUrl = p.image_url;
+    const url = typeof imageUrl === "string"
+      ? imageUrl
+      : imageUrl && typeof imageUrl === "object" && typeof (imageUrl as Record<string, unknown>).url === "string"
+        ? String((imageUrl as Record<string, unknown>).url)
+        : undefined;
+    const fileId = typeof p.file_id === "string" ? p.file_id : undefined;
+    const detail = typeof p.detail === "string"
+      ? p.detail
+      : imageUrl && typeof imageUrl === "object" && typeof (imageUrl as Record<string, unknown>).detail === "string"
+        ? String((imageUrl as Record<string, unknown>).detail)
+        : undefined;
+    const source = url ? `url=${url}` : fileId ? `file_id=${fileId}` : "source=unavailable";
+    return `[input_image ${source}${detail ? ` detail=${detail}` : ""}]`;
+  }
+
+  if (p.type === "input_file" || p.type === "file") {
+    const fields = ["filename", "file_id", "file_url"]
+      .map((key) => typeof p[key] === "string" ? `${key}=${p[key]}` : "")
+      .filter(Boolean)
+      .join(" ");
+    return `[input_file ${fields || "metadata=unavailable"}]`;
+  }
+
+  if (p.type === "input_audio" || p.type === "audio") {
+    const audio = p.input_audio && typeof p.input_audio === "object"
+      ? p.input_audio as Record<string, unknown>
+      : {};
+    const format = typeof audio.format === "string" ? audio.format : undefined;
+    const transcript = typeof p.transcript === "string"
+      ? p.transcript
+      : typeof p.text === "string"
+        ? p.text
+        : undefined;
+    const fields = [
+      format ? `format=${format}` : "",
+      transcript ? `transcript=${transcript}` : "",
+      audio.data ? "data=present" : "",
+    ].filter(Boolean).join(" ");
+    return `[input_audio ${fields || "metadata=unavailable"}]`;
+  }
+
+  if (p.type === "refusal") {
+    if (typeof p.refusal === "string") return `[refusal] ${p.refusal}`;
+    if (typeof p.text === "string") return `[refusal] ${p.text}`;
+  }
+
+  return `[unsupported_content_part type=${typeof p.type === "string" ? p.type : "unknown"}]`;
 }
 
 export function requestedFunctionTool(req: Pick<ChatCompletionRequest, "tools" | "tool_choice">): ChatCompletionTool | null {

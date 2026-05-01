@@ -25,7 +25,9 @@ import {
   chunkToSSE,
   SSE_DONE,
   turnResultToResponseObject,
+  makeResponseDoneEvent,
   makeResponseStreamEvent,
+  makeResponseTextDeltaEvent,
   makeResponseTextDoneEvent,
 } from "../adapter/codex-to-openai.js";
 import { CodexSubprocess, type CodexSubprocessOptions, type DeltaCallback, type TurnResult } from "../subprocess/manager.js";
@@ -337,9 +339,7 @@ export function createRouter(): Router {
         let result: TurnResult;
         try {
           result = await runTurn(prompt, options, runtime, "responses", (delta) => {
-            safeWrite(makeResponseStreamEvent("response.output_text.delta", {
-              output_index: 0, content_index: 0, delta,
-            }));
+            safeWrite(makeResponseTextDeltaEvent(0, 0, delta, { responseId: respId, itemId: outputId }));
             lastStreamWrite = Date.now();
           }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined);
         } finally {
@@ -349,7 +349,7 @@ export function createRouter(): Router {
         annotateTurnUsage(result, prompt, model);
 
         // output_text.done
-        safeWrite(makeResponseTextDoneEvent(0, 0, result.text));
+        safeWrite(makeResponseTextDoneEvent(0, 0, result.text, { responseId: respId, itemId: outputId }));
         lastStreamWrite = Date.now();
 
         safeWrite(makeResponseStreamEvent("response.content_part.done", {
@@ -370,10 +370,14 @@ export function createRouter(): Router {
         }));
         lastStreamWrite = Date.now();
 
-        // response.completed
+        // response.completed plus response.done alias for newer clients.
+        const finalResponse = turnResultToResponseObject(result, model, { responseId: respId, outputId });
         safeWrite(makeResponseStreamEvent("response.completed", {
-          response: turnResultToResponseObject(result, model, { responseId: respId, outputId }),
+          response: finalResponse,
         }));
+        lastStreamWrite = Date.now();
+
+        safeWrite(makeResponseDoneEvent(finalResponse));
         lastStreamWrite = Date.now();
 
         res.end();

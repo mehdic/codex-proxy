@@ -5,7 +5,9 @@ import {
   appendAssistantText,
   extractDeltaText,
   makeResponseStreamEvent,
+  makeResponseTextDeltaEvent,
   makeResponseTextDoneEvent,
+  makeResponseDoneEvent,
   turnResultToChatCompletion,
   turnResultToToolCallChatCompletion,
   turnResultToSpecificToolCallChatCompletion,
@@ -73,6 +75,29 @@ test("responsesRequestToOptions handles string input", () => {
   const { prompt, options } = responsesRequestToOptions({ model: "gpt-5.5", input: "Summarize" });
   assert.equal(prompt, "Summarize");
   assert.equal(options.model, "gpt-5.5");
+});
+
+test("responsesRequestToOptions flattens mixed Responses content parts", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [{
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_text", text: "Describe these artifacts." },
+        { type: "input_image", image_url: "https://example.com/image.png", detail: "high" },
+        { type: "input_file", filename: "brief.pdf", file_id: "file_123" },
+        { type: "input_audio", input_audio: { format: "mp3", data: "BASE64_AUDIO" }, transcript: "spoken context" } as any,
+        { type: "unknown_future_part", foo: "bar" } as any,
+      ],
+    }],
+  });
+
+  assert.match(prompt, /Describe these artifacts\./);
+  assert.match(prompt, /\[input_image url=https:\/\/example\.com\/image\.png detail=high\]/);
+  assert.match(prompt, /\[input_file filename=brief\.pdf file_id=file_123\]/);
+  assert.match(prompt, /\[input_audio format=mp3 transcript=spoken context data=present\]/);
+  assert.match(prompt, /\[unsupported_content_part type=unknown_future_part\]/);
 });
 
 test("extractDeltaText is tolerant", () => {
@@ -148,6 +173,31 @@ test("makeResponseTextDoneEvent emits Responses-compatible aliases", () => {
   assert.match(event, /^event: response\.output_text\.done\n/);
   assert.match(event, /"text":"OK"/);
   assert.match(event, /"delta":"OK"/);
+});
+
+test("Responses streaming helpers emit SDK-friendly ids and done alias", () => {
+  const delta = makeResponseTextDeltaEvent(0, 0, "O", { responseId: "resp_1", itemId: "msg_1" });
+  assert.match(delta, /^event: response\.output_text\.delta\n/);
+  assert.match(delta, /"response_id":"resp_1"/);
+  assert.match(delta, /"item_id":"msg_1"/);
+  assert.match(delta, /"delta":"O"/);
+
+  const doneText = makeResponseTextDoneEvent(0, 0, "OK", { responseId: "resp_1", itemId: "msg_1" });
+  assert.match(doneText, /"response_id":"resp_1"/);
+  assert.match(doneText, /"item_id":"msg_1"/);
+  assert.match(doneText, /"text":"OK"/);
+
+  const responseDone = makeResponseDoneEvent(turnResultToResponseObject({
+    text: "OK",
+    turnId: "turn_1",
+    threadId: "thread_1",
+    usage: null,
+    durationMs: 1,
+    finishReason: "stop",
+  }, "gpt-5.5", { responseId: "resp_1", outputId: "msg_1" }));
+  assert.match(responseDone, /^event: response\.done\n/);
+  assert.match(responseDone, /"type":"response.done"/);
+  assert.match(responseDone, /"id":"resp_1"/);
 });
 
 test("turnResultToResponseObject includes Responses API token fields even without Codex usage", () => {

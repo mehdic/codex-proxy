@@ -312,12 +312,45 @@ export function makeResponseStreamEvent(type: string, data: Record<string, unkno
   return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 }
 
-/** Build final Responses text event with a compatibility delta alias. */
-export function makeResponseTextDoneEvent(outputIndex: number, contentIndex: number, text: string): string {
+export interface ResponseStreamIds {
+  responseId?: string;
+  itemId?: string;
+}
+
+/** Build a Responses text delta event with common SDK-friendly aliases. */
+export function makeResponseTextDeltaEvent(
+  outputIndex: number,
+  contentIndex: number,
+  delta: string,
+  ids: ResponseStreamIds = {},
+): string {
+  return makeResponseStreamEvent("response.output_text.delta", {
+    ...(ids.responseId ? { response_id: ids.responseId } : {}),
+    ...(ids.itemId ? { item_id: ids.itemId } : {}),
+    output_index: outputIndex,
+    content_index: contentIndex,
+    delta,
+  });
+}
+
+/** Build final Responses text event with compatibility aliases. */
+export function makeResponseTextDoneEvent(
+  outputIndex: number,
+  contentIndex: number,
+  text: string,
+  ids: ResponseStreamIds = {},
+): string {
   return makeResponseStreamEvent("response.output_text.done", {
+    ...(ids.responseId ? { response_id: ids.responseId } : {}),
+    ...(ids.itemId ? { item_id: ids.itemId } : {}),
     output_index: outputIndex,
     content_index: contentIndex,
     text,
     delta: text,
   });
+}
+
+/** Build the newer response.done alias in addition to response.completed. */
+export function makeResponseDoneEvent(response: ResponseObject): string {
+  return makeResponseStreamEvent("response.done", { response });
 }

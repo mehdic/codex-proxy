@@ -157,14 +157,18 @@ export interface ResponseRequest {
 }
 
 export interface ResponseInputItem {
-  role: "user" | "assistant" | "system" | "developer";
+  type?: "message" | string;
+  role: "user" | "assistant" | "system" | "developer" | string;
   content: string | ResponseContentPart[];
 }
 
-export interface ResponseContentPart {
-  type: "input_text" | "output_text";
-  text: string;
-}
+export type ResponseContentPart =
+  | { type: "input_text" | "output_text" | "text"; text: string }
+  | { type: "input_image" | "image_url"; image_url?: string | { url?: string; detail?: string }; file_id?: string; detail?: string }
+  | { type: "input_file" | "file"; file_id?: string; filename?: string; file_data?: string; file_url?: string }
+  | { type: "input_audio" | "audio"; input_audio?: { data?: string; format?: string }; transcript?: string; text?: string }
+  | { type: "refusal"; refusal?: string; text?: string }
+  | { type: string; [key: string]: unknown };
 
 export interface ResponseObject {
   id: string;
