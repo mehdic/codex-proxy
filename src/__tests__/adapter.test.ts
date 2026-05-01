@@ -102,6 +102,29 @@ test("responsesRequestToOptions flattens mixed Responses content parts", () => {
   assert.match(prompt, /\[unsupported_content_part type=unknown_future_part\]/);
 });
 
+test("responsesRequestToOptions preserves Responses function-call context items", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      { type: "function_call", call_id: "call_1", name: "lookup_weather", arguments: "{\"city\":\"Zurich\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "{\"temp\":12}" },
+      { type: "reasoning", summary: [{ type: "summary_text", text: "Need the weather result." }] } as any,
+      { type: "summary_text", text: "Prior context summary." },
+      { type: "item_reference", item_id: "msg_old" },
+      { type: "message", role: "user", content: "Now answer." },
+    ],
+  });
+
+  assert.match(prompt, /<function_call name="lookup_weather" call_id="call_1">/);
+  assert.match(prompt, /\{\"city\":\"Zurich\"\}/);
+  assert.match(prompt, /<tool_result call_id="call_1">/);
+  assert.match(prompt, /\{\"temp\":12\}/);
+  assert.match(prompt, /<reasoning>\nNeed the weather result\.\n<\/reasoning>/);
+  assert.match(prompt, /Prior context summary\./);
+  assert.match(prompt, /Now answer\./);
+  assert.match(prompt, /\[item_reference id=msg_old\]/);
+});
+
 test("extractDeltaText is tolerant", () => {
   assert.equal(extractDeltaText({ delta: "abc" }), "abc");
   assert.equal(extractDeltaText({ text: "direct" }), "direct");
@@ -147,8 +170,30 @@ test("turnResultToResponseObject includes output_text and output_text convenienc
   };
   const response = turnResultToResponseObject(turn, "gpt-5.5");
   assert.equal(response.status, "completed");
-  assert.equal(response.output[0].content[0].text, "OK");
+  assert.equal(response.output[0].content[0].type, "output_text");
+  assert.equal((response.output[0].content[0] as { type: "output_text"; text: string }).text, "OK");
   assert.equal(response.output_text, "OK");
+});
+
+test("turnResultToResponseObject echoes metadata and previous_response_id when provided", () => {
+  const turn: TurnResult = {
+    text: "OK",
+    turnId: "turn_meta",
+    threadId: "thread_1",
+    usage: null,
+    durationMs: 10,
+    finishReason: "stop",
+  };
+  const response = turnResultToResponseObject(turn, "gpt-5.5", {
+    responseId: "resp_meta",
+    outputId: "msg_meta",
+    metadata: { scenario: "edge" },
+    previousResponseId: "resp_previous",
+  });
+  assert.equal(response.id, "resp_meta");
+  assert.equal(response.output[0].id, "msg_meta");
+  assert.deepEqual(response.metadata, { scenario: "edge" });
+  assert.equal(response.previous_response_id, "resp_previous");
 });
 
 test("chunkToSSE formats data line", () => {
@@ -539,4 +584,270 @@ test("extractProxyToolCall still returns only first match (backward compat)", ()
   const text = '{"tool_call":{"name":"tool_a","arguments":{}}} {"tool_call":{"name":"tool_b","arguments":{}}}';
   const call = extractProxyToolCall(text, req);
   assert.equal(call?.name, "tool_a");
+});
+
+// ── Responses API edge cases ─────────────────────────────────────────
+
+test("responsesRequestToOptions converts function_call input items to XML", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      { type: "message", role: "user", content: "Call get_weather" },
+      { type: "function_call", call_id: "call_abc", name: "get_weather", arguments: '{"city":"Paris"}' },
+      { type: "function_call_output", call_id: "call_abc", output: '{"temp":22,"unit":"C"}' },
+      { type: "message", role: "user", content: "Now summarize" },
+    ] as any,
+  });
+  assert.match(prompt, /<function_call name="get_weather" call_id="call_abc">/);
+  assert.match(prompt, /"city":"Paris"/);
+  assert.match(prompt, /<tool_result call_id="call_abc">/);
+  assert.match(prompt, /"temp":22/);
+  assert.match(prompt, /Now summarize/);
+});
+
+test("responsesRequestToOptions handles function_call with id fallback for call_id", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      { type: "function_call", id: "fc_legacy_1", name: "lookup", arguments: "{}" },
+    ] as any,
+  });
+  assert.match(prompt, /<function_call name="lookup" call_id="fc_legacy_1">/);
+});
+
+test("responsesRequestToOptions handles reasoning input items", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      { type: "reasoning", content: "The user probably wants X because of Y." },
+      { type: "message", role: "user", content: "Continue" },
+    ] as any,
+  });
+  assert.match(prompt, /<reasoning>/);
+  assert.match(prompt, /The user probably wants X/);
+  assert.match(prompt, /Continue/);
+});
+
+test("responsesRequestToOptions handles summary_text input items", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      { type: "summary_text", text: "Previous conversation covered topics A and B." },
+      { type: "message", role: "user", content: "What about C?" },
+    ] as any,
+  });
+  assert.match(prompt, /<summary>/);
+  assert.match(prompt, /Previous conversation covered topics A and B/);
+  assert.match(prompt, /What about C\?/);
+});
+
+test("responsesRequestToOptions handles item_reference input items", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      { type: "item_reference", item_id: "msg_prev_1" },
+      { type: "message", role: "user", content: "Continue from there" },
+    ] as any,
+  });
+  assert.match(prompt, /item_reference/);
+  assert.match(prompt, /msg_prev_1/);
+  assert.match(prompt, /Continue from there/);
+});
+
+test("turnResultToResponseObject echoes metadata and previous_response_id", () => {
+  const turn: TurnResult = {
+    text: "OK", turnId: "turn_meta", threadId: "thread_1",
+    usage: null, durationMs: 10, finishReason: "stop",
+  };
+  const response = turnResultToResponseObject(turn, "gpt-5.5", {
+    metadata: { session: "abc", tag: "test" },
+    previousResponseId: "resp_prev_1",
+  });
+  assert.deepEqual(response.metadata, { session: "abc", tag: "test" });
+  assert.equal(response.previous_response_id, "resp_prev_1");
+});
+
+test("turnResultToResponseObject omits metadata and previous_response_id when not provided", () => {
+  const turn: TurnResult = {
+    text: "OK", turnId: "turn_no_meta", threadId: "thread_1",
+    usage: null, durationMs: 10, finishReason: "stop",
+  };
+  const response = turnResultToResponseObject(turn, "gpt-5.5");
+  assert.equal("metadata" in response, false);
+  assert.equal("previous_response_id" in response, false);
+});
+
+test("turnResultToResponseObject echoes null metadata", () => {
+  const turn: TurnResult = {
+    text: "OK", turnId: "turn_null_meta", threadId: "thread_1",
+    usage: null, durationMs: 10, finishReason: "stop",
+  };
+  const response = turnResultToResponseObject(turn, "gpt-5.5", {
+    metadata: null, previousResponseId: null,
+  });
+  assert.equal(response.metadata, null);
+  assert.equal(response.previous_response_id, null);
+});
+
+test("responsesRequestToOptions applies response_format json_object instruction", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: "Return user info",
+    response_format: { type: "json_object" },
+  });
+  assert.match(prompt, /codex_proxy_structured_output/);
+  assert.match(prompt, /Return ONLY a valid JSON object/);
+});
+
+test("responsesRequestToOptions applies response_format json_schema instruction", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: "Return user info",
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "user_info",
+        schema: { type: "object", properties: { name: { type: "string" } } },
+      },
+    },
+  });
+  assert.match(prompt, /codex_proxy_structured_output/);
+  assert.match(prompt, /Return ONLY a valid JSON object/);
+  assert.match(prompt, /"type":"string"/);
+});
+
+test("responsesRequestToOptions does not add structured output for text response_format", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: "Hello",
+    response_format: { type: "text" },
+  });
+  assert.doesNotMatch(prompt, /codex_proxy_structured_output/);
+});
+
+test("responsesRequestToOptions does not add structured output when response_format is absent", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: "Hello",
+  });
+  assert.doesNotMatch(prompt, /codex_proxy_structured_output/);
+});
+
+test("responsesRequestToOptions passes refusal content parts through in assistant messages", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [{
+      type: "message",
+      role: "assistant",
+      content: [{ type: "refusal", refusal: "I cannot assist with that request." }],
+    }] as any,
+  });
+  assert.match(prompt, /\[refusal\] I cannot assist with that request\./);
+});
+
+test("responsesRequestToOptions preserves unknown future input items as bounded markers", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      { type: "future_context_blob", id: "ctx_1", payload: { hidden: true } },
+      { type: "message", role: "user", content: "Continue safely." },
+    ] as any,
+  });
+  assert.match(prompt, /\[unsupported_input_item type=future_context_blob\]/);
+  assert.match(prompt, /Continue safely\./);
+});
+
+// ── ResponseObject instructions/temperature/top_p echo ──────────────
+
+test("turnResultToResponseObject echoes instructions, temperature, and top_p", () => {
+  const turn: TurnResult = {
+    text: "OK", turnId: "turn_echo_full", threadId: "thread_1",
+    usage: null, durationMs: 10, finishReason: "stop",
+  };
+  const response = turnResultToResponseObject(turn, "gpt-5.5", {
+    instructions: "Be concise and accurate",
+    temperature: 0.7,
+    topP: 0.95,
+    metadata: { tag: "test" },
+    previousResponseId: "resp_prev_42",
+  });
+  assert.equal(response.instructions, "Be concise and accurate");
+  assert.equal(response.temperature, 0.7);
+  assert.equal(response.top_p, 0.95);
+  assert.deepEqual(response.metadata, { tag: "test" });
+  assert.equal(response.previous_response_id, "resp_prev_42");
+});
+
+test("turnResultToResponseObject omits instructions/temperature/top_p when not provided", () => {
+  const turn: TurnResult = {
+    text: "OK", turnId: "turn_omit_opts", threadId: "thread_1",
+    usage: null, durationMs: 10, finishReason: "stop",
+  };
+  const response = turnResultToResponseObject(turn, "gpt-5.5");
+  assert.equal("instructions" in response, false);
+  assert.equal("temperature" in response, false);
+  assert.equal("top_p" in response, false);
+});
+
+// ── Reasoning with content parts array ──────────────────────────────
+
+test("responsesRequestToOptions handles reasoning with content parts array", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      {
+        type: "reasoning",
+        content: [
+          { type: "text", text: "Step 1: identify the query." },
+          { type: "text", text: "Step 2: formulate response." },
+        ],
+      },
+      { type: "message", role: "user", content: "Go ahead" },
+    ] as any,
+  });
+  assert.match(prompt, /<reasoning>/);
+  assert.match(prompt, /Step 1: identify the query\./);
+  assert.match(prompt, /Step 2: formulate response\./);
+  assert.match(prompt, /Go ahead/);
+});
+
+// ── Full multi-turn tool-use conversation ────────────────────────────
+
+test("responsesRequestToOptions handles full multi-turn tool-use conversation", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      { type: "message", role: "system", content: "You are a helpful assistant." },
+      { type: "message", role: "user", content: "What is the weather in Paris?" },
+      { type: "function_call", call_id: "call_001", name: "get_weather", arguments: '{"location":"Paris"}' },
+      { type: "function_call_output", call_id: "call_001", output: '{"temp":18,"condition":"cloudy"}' },
+      { type: "message", role: "assistant", content: "The weather in Paris is 18C and cloudy." },
+      { type: "message", role: "user", content: "And in London?" },
+    ] as any,
+  });
+  assert.match(prompt, /<system>\nYou are a helpful assistant\.\n<\/system>/);
+  assert.match(prompt, /What is the weather in Paris\?/);
+  assert.match(prompt, /<function_call name="get_weather" call_id="call_001">/);
+  assert.match(prompt, /<tool_result call_id="call_001">/);
+  assert.match(prompt, /<previous_response>\nThe weather in Paris is 18C and cloudy\.\n<\/previous_response>/);
+  assert.match(prompt, /And in London\?/);
+});
+
+// ── summary_text content parts inside reasoning ─────────────────────
+
+test("responsesRequestToOptions handles reasoning with summary_text content parts", () => {
+  const { prompt } = responsesRequestToOptions({
+    model: "gpt-5.5",
+    input: [
+      {
+        type: "reasoning",
+        summary: [
+          { type: "summary_text", text: "The user needs a weather forecast for multiple cities." },
+        ],
+      },
+      { type: "message", role: "user", content: "Continue" },
+    ] as any,
+  });
+  assert.match(prompt, /<reasoning>/);
+  assert.match(prompt, /weather forecast for multiple cities/);
 });

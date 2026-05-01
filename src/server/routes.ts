@@ -318,14 +318,19 @@ export function createRouter(): Router {
         const outputId = `msg_${uuid()}`;
 
         // response.created
-        safeWrite(makeResponseStreamEvent("response.created", {
-          response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", model, output: [] },
-        }));
+        const partialResponse = {
+          id: respId, object: "response", created_at: Math.floor(Date.now() / 1000),
+          status: "in_progress", model, output: [],
+          instructions: body.instructions ?? null,
+          metadata: body.metadata ?? null,
+          previous_response_id: body.previous_response_id ?? null,
+          temperature: body.temperature ?? null,
+          top_p: body.top_p ?? null,
+        };
+        safeWrite(makeResponseStreamEvent("response.created", { response: partialResponse }));
         lastStreamWrite = Date.now();
 
-        safeWrite(makeResponseStreamEvent("response.in_progress", {
-          response: { id: respId, object: "response", created_at: Math.floor(Date.now() / 1000), status: "in_progress", model, output: [] },
-        }));
+        safeWrite(makeResponseStreamEvent("response.in_progress", { response: partialResponse }));
         lastStreamWrite = Date.now();
 
         // output_item.added
@@ -378,7 +383,15 @@ export function createRouter(): Router {
         lastStreamWrite = Date.now();
 
         // response.completed plus response.done alias for newer clients.
-        const finalResponse = turnResultToResponseObject(result, model, { responseId: respId, outputId });
+        const finalResponse = turnResultToResponseObject(result, model, {
+          responseId: respId,
+          outputId,
+          instructions: body.instructions ?? null,
+          metadata: body.metadata,
+          previousResponseId: body.previous_response_id,
+          temperature: body.temperature ?? null,
+          topP: body.top_p ?? null,
+        });
         safeWrite(makeResponseStreamEvent("response.completed", {
           response: finalResponse,
         }));
@@ -404,7 +417,13 @@ export function createRouter(): Router {
           session.kind === "session" ? session.sessionId : undefined,
         );
         annotateTurnUsage(result, prompt, model);
-        const response = turnResultToResponseObject(result, model);
+        const response = turnResultToResponseObject(result, model, {
+          instructions: body.instructions ?? null,
+          metadata: body.metadata,
+          previousResponseId: body.previous_response_id,
+          temperature: body.temperature ?? null,
+          topP: body.top_p ?? null,
+        });
         status = "ok";
         setUsageHeaders(res, result);
         res.json(response);

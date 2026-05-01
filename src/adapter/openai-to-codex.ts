@@ -11,8 +11,10 @@ import type {
   ChatMessage,
   ResponseRequest,
   ResponseInputItem,
+  ResponseInputMessage,
   ResponseContentPart,
   ChatCompletionTool,
+  ResponseInputReasoning,
 } from "../types/openai.js";
 import type { CodexSubprocessOptions } from "../subprocess/manager.js";
 
@@ -142,11 +144,65 @@ export function responsesRequestToOptions(
 function responsesInputToPrompt(items: ResponseInputItem[]): string {
   const parts: string[] = [];
   for (const item of items) {
-    const text = typeof item.content === "string"
-      ? item.content
-      : responseContentPartsToText(item.content);
+    const raw = item as unknown as Record<string, unknown>;
+    // Handle function_call input items
+    if (raw.type === "function_call") {
+      const callId = typeof raw.call_id === "string" ? raw.call_id : typeof raw.id === "string" ? raw.id : "unknown";
+      const name = typeof raw.name === "string" ? raw.name : "unknown";
+      const args = typeof raw.arguments === "string" ? raw.arguments : "{}";
+      parts.push(`<function_call name="${escapeXmlAttribute(name)}" call_id="${escapeXmlAttribute(callId)}">\n${args}\n</function_call>\n`);
+      continue;
+    }
 
-    switch (item.role) {
+    // Handle function_call_output input items
+    if (raw.type === "function_call_output") {
+      const callId = typeof raw.call_id === "string" ? raw.call_id : "unknown";
+      const output = typeof raw.output === "string" ? raw.output : "";
+      parts.push(`<tool_result call_id="${escapeXmlAttribute(callId)}">\n${output}\n</tool_result>\n`);
+      continue;
+    }
+
+    // Handle reasoning input items (echo summary/content as context)
+    if (raw.type === "reasoning") {
+      const reasoning = item as ResponseInputReasoning;
+      const text = typeof reasoning.content === "string"
+        ? reasoning.content
+        : reasoning.summary
+          ? responseContentPartsToText(reasoning.summary)
+          : reasoning.content
+            ? responseContentPartsToText(reasoning.content)
+            : "";
+      if (text) {
+        parts.push(`<reasoning>\n${text}\n</reasoning>\n`);
+      }
+      continue;
+    }
+
+    // Handle item_reference — emit a bounded marker so the model has context
+    if (raw.type === "item_reference") {
+      const itemId = typeof raw.item_id === "string" ? raw.item_id : "unknown";
+      parts.push(`[item_reference id=${escapeXmlAttribute(itemId)}]`);
+      continue;
+    }
+
+    // Handle summary_text input items
+    if (raw.type === "summary_text") {
+      if (typeof raw.text === "string" && raw.text) {
+        parts.push(`<summary>\n${raw.text}\n</summary>\n`);
+      }
+      continue;
+    }
+
+    // Standard message items. If a future Responses input item shape arrives,
+    // keep it as a bounded marker instead of throwing on missing role/content.
+    const msg = item as ResponseInputMessage;
+    const text = typeof msg.content === "string"
+      ? msg.content
+      : Array.isArray(msg.content)
+        ? responseContentPartsToText(msg.content)
+        : `[unsupported_input_item type=${typeof raw.type === "string" ? raw.type : "unknown"}]`;
+
+    switch (msg.role) {
       case "system":
       case "developer":
         parts.push(`<system>\n${text}\n</system>\n`);
@@ -163,7 +219,8 @@ function responsesInputToPrompt(items: ResponseInputItem[]): string {
   return parts.join("\n");
 }
 
-function responseContentPartsToText(parts: ResponseContentPart[]): string {
+function responseContentPartsToText(parts: ResponseContentPart[] | undefined): string {
+  if (!Array.isArray(parts)) return "";
   return parts
     .map((part) => responseContentPartToText(part))
     .filter(Boolean)
@@ -174,7 +231,7 @@ function responseContentPartToText(part: ResponseContentPart): string {
   if (!part || typeof part !== "object") return "";
   const p = part as Record<string, unknown>;
 
-  if ((p.type === "input_text" || p.type === "output_text" || p.type === "text") && typeof p.text === "string") {
+  if ((p.type === "input_text" || p.type === "output_text" || p.type === "text" || p.type === "summary_text") && typeof p.text === "string") {
     return p.text;
   }
 

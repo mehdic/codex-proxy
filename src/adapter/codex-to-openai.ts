@@ -307,22 +307,32 @@ export const SSE_DONE = "data: [DONE]\n\n";
 
 // ── Responses API ────────────────────────────────────────────────────
 
+export interface ResponseObjectOptions {
+  responseId?: string;
+  outputId?: string;
+  instructions?: string | null;
+  metadata?: Record<string, string> | null;
+  previousResponseId?: string | null;
+  temperature?: number | null;
+  topP?: number | null;
+}
+
 /** Build a non-streaming Responses API object from a TurnResult. */
 export function turnResultToResponseObject(
   result: TurnResult,
   model: string,
-  ids: { responseId?: string; outputId?: string } = {},
+  opts: ResponseObjectOptions = {},
 ): ResponseObject {
   const outputItem: ResponseOutputItem = {
     type: "message",
-    id: ids.outputId || `msg_${uuid()}`,
+    id: opts.outputId || `msg_${uuid()}`,
     role: "assistant",
     status: "completed",
     content: [{ type: "output_text", text: result.text }],
   };
 
   return {
-    id: ids.responseId || `resp_${result.turnId}`,
+    id: opts.responseId || `resp_${result.turnId}`,
     object: "response",
     created_at: Math.floor(Date.now() / 1000),
     model,
@@ -333,6 +343,11 @@ export function turnResultToResponseObject(
     error: result.finishReason === "error"
       ? { message: "Turn failed", code: "server_error" }
       : null,
+    ...(opts.instructions !== undefined ? { instructions: opts.instructions } : {}),
+    ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
+    ...(opts.previousResponseId !== undefined ? { previous_response_id: opts.previousResponseId } : {}),
+    ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+    ...(opts.topP !== undefined ? { top_p: opts.topP } : {}),
   };
 }
 

@@ -149,21 +149,70 @@ export interface ResponseRequest {
   stream?: boolean;
   instructions?: string;
   temperature?: number;
+  top_p?: number;
   max_output_tokens?: number;
   user?: string;
   tools?: ChatCompletionTool[];
   tool_choice?: "none" | "auto" | "required" | ChatCompletionNamedToolChoice;
   response_format?: ResponseFormat;
+  /** Optional: ID of a previous response for multi-turn chaining. Accepted but not used for server-side lookup. */
+  previous_response_id?: string;
+  /** Optional: arbitrary key-value metadata echoed back in the response. */
+  metadata?: Record<string, string> | null;
 }
 
-export interface ResponseInputItem {
+export type ResponseInputItem =
+  | ResponseInputMessage
+  | ResponseInputFunctionCall
+  | ResponseInputFunctionCallOutput
+  | ResponseInputReasoning
+  | ResponseInputItemReference
+  | ResponseInputSummaryText;
+
+export interface ResponseInputMessage {
   type?: "message" | string;
   role: "user" | "assistant" | "system" | "developer" | string;
   content: string | ResponseContentPart[];
 }
 
+export interface ResponseInputFunctionCall {
+  type: "function_call";
+  call_id?: string;
+  name: string;
+  arguments: string;
+  id?: string;
+  status?: string;
+}
+
+export interface ResponseInputFunctionCallOutput {
+  type: "function_call_output";
+  call_id: string;
+  output: string;
+  id?: string;
+}
+
+export interface ResponseInputReasoning {
+  type: "reasoning";
+  id?: string;
+  summary?: ResponseContentPart[];
+  /** Some SDK versions send the reasoning text directly. */
+  content?: string | ResponseContentPart[];
+}
+
+export interface ResponseInputItemReference {
+  type: "item_reference";
+  item_id: string;
+  id?: string;
+}
+
+export interface ResponseInputSummaryText {
+  type: "summary_text";
+  text: string;
+  id?: string;
+}
+
 export type ResponseContentPart =
-  | { type: "input_text" | "output_text" | "text"; text: string }
+  | { type: "input_text" | "output_text" | "text" | "summary_text"; text: string }
   | { type: "input_image" | "image_url"; image_url?: string | { url?: string; detail?: string }; file_id?: string; detail?: string }
   | { type: "input_file" | "file"; file_id?: string; filename?: string; file_data?: string; file_url?: string }
   | { type: "input_audio" | "audio"; input_audio?: { data?: string; format?: string }; transcript?: string; text?: string }
@@ -180,6 +229,20 @@ export interface ResponseObject {
   output_text?: string;
   usage?: ResponseUsage;
   error?: { message: string; code: string } | null;
+  instructions?: string | null;
+  metadata?: Record<string, string> | null;
+  previous_response_id?: string | null;
+  temperature?: number | null;
+  top_p?: number | null;
+}
+
+export type ResponseOutputContentPart =
+  | { type: "output_text"; text: string; annotations?: ResponseAnnotation[] }
+  | { type: "refusal"; refusal: string };
+
+export interface ResponseAnnotation {
+  type: string;
+  [key: string]: unknown;
 }
 
 export interface ResponseOutputItem {
@@ -187,7 +250,7 @@ export interface ResponseOutputItem {
   id: string;
   role: "assistant";
   status: "completed";
-  content: { type: "output_text"; text: string }[];
+  content: ResponseOutputContentPart[];
 }
 
 // ── Streaming events for Responses API ──────────────────────────────
