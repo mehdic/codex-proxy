@@ -21,24 +21,21 @@ This follows the same philosophy as [`claude-proxy`](https://github.com/mehdic/c
 
 ## Status
 
-v0.4.4 local proxy. Working locally with:
+v0.4.8 local proxy. Working locally with:
 
-- non-streaming `/v1/chat/completions`
-- streaming `/v1/chat/completions`
-- minimal `/v1/responses`
-- minimal streaming `/v1/responses`
-- `/v1/models`
-- `/health`
-- `/healthz/deep`
-- `/version`
-- `/metrics`
-- app-server stdio transport
-- pooled persistent `codex app-server` workers with one ephemeral thread per request
-- opt-in, TTL-limited Codex session/thread pooling
-- one-shot fallback mode
-- SSE keepalive comments for streaming clients with writable-guard hardening
+- non-streaming and streaming `/v1/chat/completions`
+- improved `/v1/responses` compatibility for string input, message arrays, mixed content parts, function-call/function-call-output inputs, reasoning/summary/item-reference inputs, and SDK-friendly streaming event aliases
+- `/v1/models`, `/health`, `/healthz/deep`, `/version`, `/metrics`, `/pricing`
+- app-server stdio transport over the official `codex app-server`
+- pooled persistent `codex app-server` workers with one ephemeral thread per request by default
+- opt-in, TTL/LRU-limited Codex session/thread pooling via `CODEX_PROXY_SESSIONS=1` and `X-Codex-Proxy-Session`
+- one-shot fallback mode for eligible pool transport failures before response bytes are committed
+- SSE keepalive comments plus writable-guard hardening for streaming clients and early disconnects
 - env-gated localhost CORS
-- composable operational tool bridge (external tools via OpenClaw coexist with Codex native capabilities)
+- configurable Codex sandbox/approval policy (`CODEX_PROXY_SANDBOX`, `CODEX_PROXY_APPROVAL_POLICY`)
+- usage metadata, cached/reasoning token details where Codex reports them, simulated public API-equivalent cost estimates, and Prometheus metrics
+- composable operational tool bridge: external caller-dispatched tools via OpenClaw/LangChain coexist with Codex-native capabilities, and current code supports multiple emitted tool calls in one assistant turn
+- macOS LaunchAgent templates, installer, release checklist, smoke tests, and local soak harness
 
 The implementation intentionally avoids the experimental Codex WebSocket transport.
 
@@ -146,7 +143,7 @@ The smoke script uses localhost only and checks `/health`, `/v1/models`, one non
 | `/pricing`, `/v1/pricing` | GET | Public fallback pricing book used for local cost estimates |
 | `/models`, `/v1/models` | GET | OpenAI model list |
 | `/chat/completions`, `/v1/chat/completions` | POST | OpenAI chat-completions-compatible API |
-| `/responses`, `/v1/responses` | POST | Minimal OpenAI Responses-style API |
+| `/responses`, `/v1/responses` | POST | OpenAI Responses-style API with text, mixed content markers, function-call context items, streaming aliases, usage, and metadata echoes |
 
 Use `/health` for frequent process checks. Use `/healthz/deep` for readiness diagnostics because it starts `codex app-server` and consumes a small live turn.
 
@@ -301,22 +298,42 @@ The proxy supports two tool-calling modes:
 1. **Structured output** (single schema-style function, e.g. LangChain `with_structured_output`): the proxy injects a JSON-schema conformance instruction and returns the result as a standard `tool_calls` response.
 2. **Operational tool bridge** (multi-tool agent loops, e.g. OpenClaw MCP tools): the proxy describes caller-dispatched external tools in the prompt and instructs the model to return `{"tool_call":{...}}` JSON when one of those external tools is needed. The proxy does **not** execute these tools — the caller (OpenClaw, LangChain, etc.) dispatches them and sends results back as `tool` messages. Codex keeps its native capabilities/tools as provided by the Codex app-server session and may use them alongside or instead of external tool calls when they are sufficient.
 
+Operational bridge responses may contain multiple `tool_call` JSON objects in one assistant turn. The proxy preserves their order and returns them as multiple OpenAI-style `message.tool_calls` entries, or as streaming `delta.tool_calls` chunks with `finish_reason: "tool_calls"` on the final tool chunk.
+
 This composable design ensures OpenClaw-dispatched tools and Codex-native capabilities are combined into a larger effective tool range rather than one suppressing or replacing the other.
 
-## Roadmap
+## Next features / plan
 
-- Better `/v1/responses` compatibility for additional content parts and event aliases.
-- More schema-drift fixtures for Codex app-server notifications and session thread reuse.
-- Optional local auth layer for non-loopback deployments.
-- Parallel tool calls (multiple `tool_calls` in a single response).
+The complete project plan lives in [`docs/OCTO_FEATURE_PLAN.md`](docs/OCTO_FEATURE_PLAN.md).
+
+Implemented through v0.4.8:
+
+- pooled/oneshot runtimes, opt-in sessions, pricing/usage reporting, release checklist, LaunchAgent support, and local soak harness
+- configurable Codex sandbox/approval policy for trusted localhost deployments
+- composable external-tool bridge with multiple `tool_calls` in one assistant turn
+- practical Responses compatibility for string/message inputs, mixed content markers, function-call context, reasoning/summary/item references, metadata echoes, and streaming aliases
+- live validation: release checklist, Responses edge-case smoke, multi-tool smoke, raw HTTP fanout, and OpenClaw sub-agent fanout
+
+Recommended next work, in order:
+
+1. **Minimal durable response/thread state** — optional TTL-bounded filesystem/SQLite state for practical `previous_response_id` and restart-safe session metadata, without storing prompts or OAuth material.
+2. **Security and policy layer** — optional virtual API keys, per-key model/runtime/session/sandbox limits, origin validation, rate limits, and refusal/warnings for non-loopback bind without auth.
+3. **Approval and sandbox bridge** — expose Codex approval waits/decisions clearly instead of letting agent flows hang mysteriously.
+4. **Tool trace/replay** — request trace IDs, recent redacted traces, multi-tool-call replay data, app-server event class, fallback path, and tool-result reinjection records.
+5. **Thin observability export** — optional OpenTelemetry/Langfuse-style spans with redaction, disabled by default.
+
+Ongoing hygiene: keep README, package version, tags, `/health`, and infra docs synchronized. This project has enough moving parts now that stale docs are an actual production risk, because of course they are.
+
+Deprioritized unless a real client demands them: model routing, semantic caching, batch APIs, and WebSocket transport. Those are attractive traps. The proxy should remain a trustworthy bridge, not a second platform.
 
 ## Caveats
 
 - Codex app-server is JSON-RPC and agent-oriented; this proxy maps it into OpenAI-ish response shapes.
-- `/v1/responses` is still minimal and text-only.
-- Images, approvals, and durable cross-process sessions are not implemented yet.
+- `/v1/responses` is improved and useful, but still not full durable OpenAI Responses parity.
+- `previous_response_id` is not yet backed by durable state.
+- Image/audio/file inputs are flattened or represented as placeholders; real multimodal transport is not implemented yet.
+- Approval UI/bridge support is not implemented yet.
 - The proxy uses stdio transport. Codex WebSocket transport is documented as experimental/unsupported, so it is intentionally avoided.
-- Operational tool bridge currently returns one tool call per turn; parallel tool calls are a roadmap item.
 
 ## License
 
