@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chatMessagesToPrompt, chatRequestToOptions, extractProxyToolCall, requestedFunctionTool, responsesRequestToOptions, shouldEmulateOperationalTools } from "../adapter/openai-to-codex.js";
+import { chatMessagesToPrompt, chatRequestToOptions, extractProxyToolCall, extractAllProxyToolCalls, requestedFunctionTool, responsesRequestToOptions, shouldEmulateOperationalTools } from "../adapter/openai-to-codex.js";
 import {
   appendAssistantText,
   extractDeltaText,
@@ -11,7 +11,9 @@ import {
   turnResultToChatCompletion,
   turnResultToToolCallChatCompletion,
   turnResultToSpecificToolCallChatCompletion,
+  turnResultToMultiToolCallChatCompletion,
   turnResultToResponseObject,
+  makeChatToolCallChunk,
   chunkToSSE,
 } from "../adapter/codex-to-openai.js";
 import type { TurnResult } from "../subprocess/manager.js";
@@ -419,4 +421,122 @@ test("turnResultToToolCallChatCompletion wraps JSON as OpenAI tool_calls", () =>
   assert.deepEqual(JSON.parse(response.choices[0].message.tool_calls?.[0].function.arguments || "{}"), { rating: "Overweight" });
   assert.equal(response.usage?.prompt_tokens_details?.cached_tokens, 4);
   assert.equal(response.usage?.completion_tokens_details?.reasoning_tokens, 2);
+});
+
+// ── Multi-tool_call tests ────────────────────────────────────────────
+
+test("extractAllProxyToolCalls returns all valid tool calls from text with multiple bridge objects", () => {
+  const req = {
+    tools: [
+      { type: "function" as const, function: { name: "n8n__n8n_list_workflows", parameters: { type: "object" } } },
+      { type: "function" as const, function: { name: "search_web", parameters: { type: "object" } } },
+    ],
+  };
+  const text = 'I will call two tools. {"tool_call":{"name":"n8n__n8n_list_workflows","arguments":{"limit":5}}} {"tool_call":{"name":"search_web","arguments":{"query":"hello"}}}';
+  const calls = extractAllProxyToolCalls(text, req);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].name, "n8n__n8n_list_workflows");
+  assert.deepEqual(calls[0].arguments, { limit: 5 });
+  assert.equal(calls[1].name, "search_web");
+  assert.deepEqual(calls[1].arguments, { query: "hello" });
+});
+
+test("extractAllProxyToolCalls returns single-element array for one bridge object", () => {
+  const req = {
+    tools: [
+      { type: "function" as const, function: { name: "n8n__n8n_list_workflows", parameters: { type: "object" } } },
+    ],
+  };
+  const text = '{"tool_call":{"name":"n8n__n8n_list_workflows","arguments":{"limit":10}}}';
+  const calls = extractAllProxyToolCalls(text, req);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, "n8n__n8n_list_workflows");
+});
+
+test("extractAllProxyToolCalls returns empty array when no valid tool calls found", () => {
+  const req = {
+    tools: [
+      { type: "function" as const, function: { name: "n8n__n8n_list_workflows", parameters: { type: "object" } } },
+    ],
+  };
+  const text = "Just some plain text, no tools needed.";
+  const calls = extractAllProxyToolCalls(text, req);
+  assert.equal(calls.length, 0);
+});
+
+test("extractAllProxyToolCalls filters out tool calls with unknown names", () => {
+  const req = {
+    tools: [
+      { type: "function" as const, function: { name: "search_web", parameters: { type: "object" } } },
+    ],
+  };
+  const text = '{"tool_call":{"name":"evil_tool","arguments":{}}} {"tool_call":{"name":"search_web","arguments":{"q":"test"}}}';
+  const calls = extractAllProxyToolCalls(text, req);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, "search_web");
+});
+
+test("extractAllProxyToolCalls skips non-tool JSON objects interspersed with tool calls", () => {
+  const req = {
+    tools: [
+      { type: "function" as const, function: { name: "tool_a", parameters: { type: "object" } } },
+      { type: "function" as const, function: { name: "tool_b", parameters: { type: "object" } } },
+    ],
+  };
+  const text = '{"info":"ctx"} {"tool_call":{"name":"tool_a","arguments":{"x":1}}} some prose {"data":123} {"tool_call":{"name":"tool_b","arguments":{"y":2}}}';
+  const calls = extractAllProxyToolCalls(text, req);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].name, "tool_a");
+  assert.equal(calls[1].name, "tool_b");
+});
+
+
+
+test("makeChatToolCallChunk can stream intermediate multi-tool deltas without final finish", () => {
+  const chunk = makeChatToolCallChunk(
+    "stream_multi",
+    "gpt-5.5",
+    { id: "call_stream_multi", type: "function", function: { name: "tool_a", arguments: "{}" } },
+    1,
+    null,
+  );
+  assert.equal(chunk.choices[0].delta.tool_calls?.[0].index, 1);
+  assert.equal(chunk.choices[0].finish_reason, null);
+});
+
+test("turnResultToMultiToolCallChatCompletion returns multiple tool_calls in message", () => {
+  const turn: TurnResult = {
+    text: '{"tool_call":{"name":"tool_a","arguments":{"x":1}}} {"tool_call":{"name":"tool_b","arguments":{"y":2}}}',
+    turnId: "turn_multi",
+    threadId: "thread_1",
+    usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, cachedInputTokens: 0, reasoningOutputTokens: 0 },
+    durationMs: 20,
+    finishReason: "stop",
+  };
+  const toolCalls = [
+    { name: "tool_a", arguments: { x: 1 } },
+    { name: "tool_b", arguments: { y: 2 } },
+  ];
+  const response = turnResultToMultiToolCallChatCompletion(turn, "gpt-5.5", toolCalls);
+  assert.equal(response.choices[0].finish_reason, "tool_calls");
+  assert.equal(response.choices[0].message.content, null);
+  assert.equal(response.choices[0].message.tool_calls?.length, 2);
+  assert.equal(response.choices[0].message.tool_calls?.[0].function.name, "tool_a");
+  assert.deepEqual(JSON.parse(response.choices[0].message.tool_calls?.[0].function.arguments || "{}"), { x: 1 });
+  assert.equal(response.choices[0].message.tool_calls?.[1].function.name, "tool_b");
+  assert.deepEqual(JSON.parse(response.choices[0].message.tool_calls?.[1].function.arguments || "{}"), { y: 2 });
+  // Each tool_call should have a unique id
+  assert.notEqual(response.choices[0].message.tool_calls?.[0].id, response.choices[0].message.tool_calls?.[1].id);
+});
+
+test("extractProxyToolCall still returns only first match (backward compat)", () => {
+  const req = {
+    tools: [
+      { type: "function" as const, function: { name: "tool_a", parameters: { type: "object" } } },
+      { type: "function" as const, function: { name: "tool_b", parameters: { type: "object" } } },
+    ],
+  };
+  const text = '{"tool_call":{"name":"tool_a","arguments":{}}} {"tool_call":{"name":"tool_b","arguments":{}}}';
+  const call = extractProxyToolCall(text, req);
+  assert.equal(call?.name, "tool_a");
 });

@@ -196,9 +196,36 @@ export function turnResultToSpecificToolCallChatCompletion(
   };
 }
 
-export function makeToolCall(seed: string, toolName: string, args: Record<string, unknown>): ChatCompletionToolCall {
+export function turnResultToMultiToolCallChatCompletion(
+  result: TurnResult,
+  model: string,
+  toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>,
+): ChatCompletionResponse {
   return {
-    id: `call_${seed.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32) || uuid()}`,
+    id: `chatcmpl-${result.turnId}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: toolCalls.map((call, index) => makeToolCall(result.turnId, call.name, call.arguments, index)),
+        },
+        finish_reason: "tool_calls",
+      },
+    ],
+    usage: turnResultUsageToOpenAI(result),
+  };
+}
+
+export function makeToolCall(seed: string, toolName: string, args: Record<string, unknown>, index = 0): ChatCompletionToolCall {
+  const cleanSeed = seed.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 28);
+  const suffix = index > 0 ? `_${index}` : "";
+  return {
+    id: `call_${cleanSeed || uuid()}${suffix}`,
     type: "function",
     function: { name: toolName, arguments: JSON.stringify(args || {}) },
   };
@@ -249,6 +276,8 @@ export function makeChatToolCallChunk(
   id: string,
   model: string,
   toolCall: ChatCompletionToolCall,
+  toolIndex: number = 0,
+  finishReason: "tool_calls" | null = "tool_calls",
 ): ChatCompletionChunk {
   return {
     id: `chatcmpl-${id}`,
@@ -260,9 +289,9 @@ export function makeChatToolCallChunk(
         index: 0,
         delta: {
           role: "assistant",
-          tool_calls: [{ index: 0, ...toolCall }],
+          tool_calls: [{ index: toolIndex, ...toolCall }],
         },
-        finish_reason: "tool_calls",
+        finish_reason: finishReason,
       },
     ],
   };

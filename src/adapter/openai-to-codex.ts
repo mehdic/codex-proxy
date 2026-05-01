@@ -272,10 +272,16 @@ export function shouldEmulateOperationalTools(req: Pick<ChatCompletionRequest, "
 }
 
 export function extractProxyToolCall(text: string, req: Pick<ChatCompletionRequest, "tools" | "tool_choice">): ProxyToolCallRequest | null {
-  if (!shouldEmulateOperationalTools(req)) return null;
+  const all = extractAllProxyToolCalls(text, req);
+  return all.length > 0 ? all[0] : null;
+}
+
+/** Extract ALL valid operational tool call bridge objects from text. */
+export function extractAllProxyToolCalls(text: string, req: Pick<ChatCompletionRequest, "tools" | "tool_choice">): ProxyToolCallRequest[] {
+  if (!shouldEmulateOperationalTools(req)) return [];
   const allowed = new Set((req.tools || []).filter((tool) => tool.type === "function").map((tool) => tool.function.name));
 
-  // Scan all top-level JSON objects in the text (handles prose, code fences, duplicates).
+  const results: ProxyToolCallRequest[] = [];
   for (const obj of iterJsonObjects(text)) {
     const candidate = obj.tool_call;
     if (!candidate || typeof candidate !== "object") continue;
@@ -284,9 +290,9 @@ export function extractProxyToolCall(text: string, req: Pick<ChatCompletionReque
     const args = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
       ? call.arguments as Record<string, unknown>
       : {};
-    return { name: call.name, arguments: args };
+    results.push({ name: call.name, arguments: args });
   }
-  return null;
+  return results;
 }
 
 function appendToolInstructions(
@@ -307,8 +313,9 @@ function appendToolInstructions(
 <codex_proxy_openai_tools>
 The following external OpenAI/OpenClaw tools are available in addition to your native Codex capabilities.
 These external tools are dispatched by the caller (e.g. OpenClaw); the proxy will not execute them for you.
-To request one external tool, return ONLY a valid JSON object in this exact shape:
+To request external tools, return a valid JSON object in this exact shape for each tool:
 {"tool_call":{"name":"tool_name","arguments":{}}}
+You may emit multiple tool_call objects in a single response to invoke several tools in parallel. Place each on its own line or separate them with whitespace.
 Use one of the external tool names listed below and fill arguments according to its schema.
 Do not treat this bridge as replacing or disabling Codex-native tools/capabilities. Use your native Codex capabilities whenever they are useful, and request an external OpenAI/OpenClaw tool only when the caller-dispatched tool is the right source or action.
 If a <tool_result> is present, consume it to answer the user's request; do NOT repeat the same external tool call unless the user explicitly asks for another call.

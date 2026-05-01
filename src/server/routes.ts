@@ -13,11 +13,13 @@ import {
   requestedFunctionTool,
   shouldEmulateOperationalTools,
   extractProxyToolCall,
+  extractAllProxyToolCalls,
 } from "../adapter/openai-to-codex.js";
 import {
   turnResultToChatCompletion,
   turnResultToToolCallChatCompletion,
   turnResultToSpecificToolCallChatCompletion,
+  turnResultToMultiToolCallChatCompletion,
   makeToolCall,
   makeChatToolCallChunk,
   makeChatCompletionChunk,
@@ -195,10 +197,13 @@ export function createRouter(): Router {
         status = "ok";
         annotateTurnUsage(result, prompt, model);
 
-        const proxyToolCall = emulateTools ? extractProxyToolCall(result.text, body) : null;
-        if (proxyToolCall) {
-          const toolCall = makeToolCall(result.turnId, proxyToolCall.name, proxyToolCall.arguments);
-          safeWrite(chunkToSSE(makeChatToolCallChunk(streamId, model, toolCall)));
+        const proxyToolCalls = emulateTools ? extractAllProxyToolCalls(result.text, body) : [];
+        if (proxyToolCalls.length > 0) {
+          for (let i = 0; i < proxyToolCalls.length; i++) {
+            const toolCall = makeToolCall(result.turnId, proxyToolCalls[i].name, proxyToolCalls[i].arguments, i);
+            const finishReason = i === proxyToolCalls.length - 1 ? "tool_calls" : null;
+            safeWrite(chunkToSSE(makeChatToolCallChunk(streamId, model, toolCall, i, finishReason)));
+          }
         } else {
           if (emulateTools && result.text) {
             safeWrite(chunkToSSE(makeChatCompletionChunk(streamId, model, result.text)));
@@ -226,12 +231,14 @@ export function createRouter(): Router {
         );
         annotateTurnUsage(result, prompt, model);
         const requestedTool = requestedFunctionTool(body);
-        const proxyToolCall = extractProxyToolCall(result.text, body);
-        const response = proxyToolCall
-          ? turnResultToSpecificToolCallChatCompletion(result, model, proxyToolCall.name, proxyToolCall.arguments)
-          : requestedTool
-            ? turnResultToToolCallChatCompletion(result, model, requestedTool.function.name)
-            : turnResultToChatCompletion(result, model);
+        const proxyToolCalls = extractAllProxyToolCalls(result.text, body);
+        const response = proxyToolCalls.length > 1
+          ? turnResultToMultiToolCallChatCompletion(result, model, proxyToolCalls)
+          : proxyToolCalls.length === 1
+            ? turnResultToSpecificToolCallChatCompletion(result, model, proxyToolCalls[0].name, proxyToolCalls[0].arguments)
+            : requestedTool
+              ? turnResultToToolCallChatCompletion(result, model, requestedTool.function.name)
+              : turnResultToChatCompletion(result, model);
         status = "ok";
         setUsageHeaders(res, result);
         res.json(response);
