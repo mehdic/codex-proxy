@@ -23,6 +23,8 @@ export interface ProxyConfig {
   debug: boolean;
   stderrMaxBytes: number;
   cors: boolean;
+  codexSandbox: "read-only" | "workspace-write" | "danger-full-access";
+  codexApprovalPolicy: "untrusted" | "on-failure" | "on-request" | "never";
 }
 
 type Env = Record<string, string | undefined>;
@@ -54,6 +56,8 @@ export function parseConfig(env: Env = process.env): ProxyConfig {
     debug: env.CODEX_PROXY_DEBUG === "1" || env.DEBUG === "1" || env.DEBUG === "true",
     stderrMaxBytes: parsePositiveInt(env.CODEX_PROXY_STDERR_MAX_BYTES, 16_384),
     cors: env.CODEX_PROXY_CORS === "1",
+    codexSandbox: parseCodexSandbox(env.CODEX_PROXY_SANDBOX, "read-only"),
+    codexApprovalPolicy: parseCodexApprovalPolicy(env.CODEX_PROXY_APPROVAL_POLICY, "never"),
   };
 }
 
@@ -74,6 +78,24 @@ function parseNonNegativeInt(value: string | undefined, fallback: number): numbe
 
 function parseRuntime(value: string | undefined, fallback: "pool" | "oneshot"): "pool" | "oneshot" {
   return value === "pool" || value === "oneshot" ? value : fallback;
+}
+
+function parseCodexSandbox(
+  value: string | undefined,
+  fallback: ProxyConfig["codexSandbox"],
+): ProxyConfig["codexSandbox"] {
+  return value === "read-only" || value === "workspace-write" || value === "danger-full-access"
+    ? value
+    : fallback;
+}
+
+function parseCodexApprovalPolicy(
+  value: string | undefined,
+  fallback: ProxyConfig["codexApprovalPolicy"],
+): ProxyConfig["codexApprovalPolicy"] {
+  return value === "untrusted" || value === "on-failure" || value === "on-request" || value === "never"
+    ? value
+    : fallback;
 }
 
 function parseCsv(value: string | undefined, fallback: string[]): string[] {

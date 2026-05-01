@@ -21,6 +21,8 @@ test("parseConfig applies safe defaults", () => {
   assert.equal(cfg.sessionMax, 32);
   assert.equal(cfg.debug, false);
   assert.equal(cfg.cors, false);
+  assert.equal(cfg.codexSandbox, "read-only");
+  assert.equal(cfg.codexApprovalPolicy, "never");
 });
 
 test("parseConfig reads env overrides and clamps invalid numbers", () => {
@@ -43,6 +45,8 @@ test("parseConfig reads env overrides and clamps invalid numbers", () => {
     CODEX_PROXY_SESSION_MAX: "7",
     CODEX_PROXY_DEBUG: "1",
     CODEX_PROXY_CORS: "1",
+    CODEX_PROXY_SANDBOX: "danger-full-access",
+    CODEX_PROXY_APPROVAL_POLICY: "on-request",
   });
 
   assert.equal(cfg.host, "0.0.0.0");
@@ -63,4 +67,16 @@ test("parseConfig reads env overrides and clamps invalid numbers", () => {
   assert.equal(cfg.sessionMax, 7);
   assert.equal(cfg.debug, true);
   assert.equal(cfg.cors, true);
+  assert.equal(cfg.codexSandbox, "danger-full-access");
+  assert.equal(cfg.codexApprovalPolicy, "on-request");
+});
+
+test("parseConfig falls back for invalid Codex sandbox and approval values", () => {
+  const cfg = parseConfig({
+    CODEX_PROXY_SANDBOX: "root-mode",
+    CODEX_PROXY_APPROVAL_POLICY: "always-yes",
+  });
+
+  assert.equal(cfg.codexSandbox, "read-only");
+  assert.equal(cfg.codexApprovalPolicy, "never");
 });

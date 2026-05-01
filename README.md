@@ -229,7 +229,39 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 | `CODEX_PROXY_HEALTH_TIMEOUT_MS` | `30000` | Deep health timeout |
 | `CODEX_PROXY_SHUTDOWN_GRACE_MS` | `10000` | Grace period for SIGINT/SIGTERM shutdown |
 | `CODEX_PROXY_CORS` | unset | Set `1` to allow localhost browser origins |
+| `CODEX_PROXY_SANDBOX` | `read-only` | Codex app-server thread sandbox: `read-only`, `workspace-write`, or `danger-full-access` |
+| `CODEX_PROXY_APPROVAL_POLICY` | `never` | Codex app-server approval policy: `never`, `on-request`, `on-failure`, or `untrusted` |
 | `DEBUG` | unset | Logs app-server stderr snippets for debugging |
+
+### Codex app-server sandbox / approval
+
+Codex Proxy starts Codex app-server threads with explicit sandbox and approval settings. Defaults are intentionally conservative:
+
+```bash
+CODEX_PROXY_SANDBOX=read-only
+CODEX_PROXY_APPROVAL_POLICY=never
+```
+
+Supported sandbox values:
+
+| Value | Meaning | Recommended use |
+|---|---|---|
+| `read-only` | Codex-native tools can inspect but should not write; local network/socket access may be restricted by Codex. | Default for shared, public, or uncertain deployments. |
+| `workspace-write` | Codex may write inside the active workspace while staying constrained outside it. | Coding work where edits are expected but broad host access is not. |
+| `danger-full-access` | Codex runs without the Codex sandbox boundary. | Trusted localhost-only agents where native shell/network/filesystem access is desired. |
+
+Supported approval values: `never`, `on-request`, `on-failure`, `untrusted`.
+
+For this Mac mini trusted local OpenClaw/Codex instance, the LaunchAgent can intentionally run full access:
+
+```xml
+<key>CODEX_PROXY_SANDBOX</key>
+<string>danger-full-access</string>
+<key>CODEX_PROXY_APPROVAL_POLICY</key>
+<string>never</string>
+```
+
+That affects Codex-native tool execution inside the Codex app-server session. It does not change the OpenClaw external tool bridge: external OpenAI/OpenClaw tools are still emitted as `tool_calls` and dispatched by OpenClaw.
 
 ## Operational docs
 
@@ -244,7 +276,7 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 - Does **not** read, store, print, or copy Codex OAuth tokens.
 - Delegates auth/session refresh to the official Codex CLI/app-server.
 - Uses a fresh ephemeral Codex thread per request unless `CODEX_PROXY_SESSIONS=1` and a valid `X-Codex-Proxy-Session` header is present.
-- Requests are run with conservative app-server parameters (`approvalPolicy: never`, `sandbox: read-only`) where supported.
+- Requests default to conservative app-server parameters (`approvalPolicy: never`, `sandbox: read-only`) where supported. These are configurable via `CODEX_PROXY_APPROVAL_POLICY` and `CODEX_PROXY_SANDBOX` for trusted deployments that need more capability.
 
 Important caveat: Codex is an agent, not merely a text model. Keep this service private and localhost-only unless you add your own authentication, authorization, and sandbox policy review.
 

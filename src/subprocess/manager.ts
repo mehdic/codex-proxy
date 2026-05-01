@@ -172,8 +172,8 @@ export class CodexSubprocess {
     const threadResp = await this.sendRequest<ThreadStartResponse>("thread/start", {
       model: options.model,
       cwd: options.cwd || process.cwd(),
-      approvalPolicy: "never",
-      sandbox: "read-only",
+      approvalPolicy: CONFIG.codexApprovalPolicy,
+      sandbox: CONFIG.codexSandbox,
       ephemeral,
       baseInstructions: options.instructions || null,
       experimentalRawEvents: false,
