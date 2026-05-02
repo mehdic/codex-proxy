@@ -120,9 +120,13 @@ Session controls:
 
 Session ids are never used as metric labels. Prompts, raw instructions, and raw cwd values are not used in logs, metrics labels, or pool/session keys.
 
-Streaming responses send an initial SSE comment (`:ok\n\n`) and then idle SSE comment keepalives (`:keepalive req_id=... count=...\n\n`). Configure with `CODEX_PROXY_KEEPALIVE_MS`, default `10000`; set `0` to disable. Comments do not create OpenAI data events and are intended only to keep compatible clients and intermediaries from timing out.
+### Streaming keepalives and visible progress
 
-When Codex app-server emits truthful long-running work notifications, the idle keepalive path prefers visible progress chunks over comment-only keepalives. Chat Completions streams emit newline-terminated assistant deltas such as `[progress: using shell…]\n` or `[progress: waiting for shell, 12s…]\n`; Responses streams emit equivalent `response.output_text.delta` progress. These labels are intentionally visible so Telegram/OpenClaw previews show that Codex is still working, while generic idle keepalives remain transport-only comments and never use zero-width or fake assistant text.
+Streaming responses send two kinds of keepalive signal:
+
+1. **Transport-only SSE comments** — an initial `:ok\n\n` on connection, then idle `:keepalive req_id=... count=...\n\n` comments at the `CODEX_PROXY_KEEPALIVE_MS` interval (default `10000`; `0` disables). These are SSE comments, not `data:` events, so they keep the connection alive without producing OpenAI chunks or visible assistant text.
+
+2. **Visible progress chunks** — when Codex app-server emits truthful long-running work notifications (command execution, file changes), the keepalive path emits newline-terminated assistant content instead of a comment. Chat Completions streams send standard `data:` deltas such as `[progress: using shell…]\n` or `[progress: waiting for shell, 12s…]\n`; Responses streams send equivalent `response.output_text.delta` events. These are real assistant text so that OpenClaw streaming previews and Telegram message previews show that Codex is still working. The proxy never uses zero-width characters, empty deltas, or other invisible padding as fake progress.
 
 All streaming writes (keepalive, delta, finish, error) are guarded against writing to a closed or ended response stream. When a client disconnects mid-stream, the proxy silently drops remaining writes instead of crashing with EPIPE or ERR_STREAM_WRITE_AFTER_END. Client-close cancellation (`client_closed`) errors are suppressed in both streaming error handlers to avoid emitting invalid SSE error events to a dead connection.
 

@@ -1,6 +1,6 @@
 # OpenClaw
 
-`codex-proxy` (v0.4.4) can be used as a local OpenAI-compatible provider in OpenClaw. The proxy should run on localhost and Codex CLI should own all authentication.
+`codex-proxy` (v0.4.8) can be used as a local OpenAI-compatible provider in OpenClaw. The proxy should run on localhost and Codex CLI should own all authentication.
 
 ## Tool bridge semantics
 
@@ -56,7 +56,9 @@ If your OpenClaw build supports the Responses API, use the same `baseUrl` with `
 
 ## Streaming progress previews
 
-Streaming responses send an initial `:ok` SSE comment and idle `:keepalive req_id=... count=...` comments. When Codex app-server reports real long-running work, those idle ticks become visible, newline-terminated progress deltas such as `[progress: using shell…]\n` and `[progress: waiting for shell, 12s…]\n`. This is deliberate for OpenClaw/Telegram previews: real progress is visible, generic keepalive remains transport-only, and the proxy does not emit zero-width-space or other fake assistant text.
+Streaming responses send an initial `:ok` SSE comment and idle `:keepalive req_id=... count=...` comments. These are transport-only SSE comments that keep the connection alive without producing visible text.
+
+When Codex app-server reports real long-running work (shell commands, file changes), the keepalive path emits visible, newline-terminated progress deltas instead: `[progress: using shell…]\n`, `[progress: waiting for shell, 12s…]\n`, etc. These are standard assistant-content chunks (Chat Completions `data:` deltas / Responses `response.output_text.delta` events), so OpenClaw's streaming preview surfaces them in the Telegram chat as a live typing indicator while Codex is working. The proxy never uses zero-width characters, empty deltas, or other invisible padding as fake progress.
 
 ## Usage and cost estimates
 
