@@ -54,6 +54,10 @@ Add a provider similar to this in your OpenClaw model configuration:
 
 If your OpenClaw build supports the Responses API, use the same `baseUrl` with `/v1/responses`. Chat completions remain the most compatible path.
 
+## Streaming progress previews
+
+Streaming responses send an initial `:ok` SSE comment and idle `:keepalive req_id=... count=...` comments. When Codex app-server reports real long-running work, those idle ticks become visible, newline-terminated progress deltas such as `[progress: using shell…]\n` and `[progress: waiting for shell, 12s…]\n`. This is deliberate for OpenClaw/Telegram previews: real progress is visible, generic keepalive remains transport-only, and the proxy does not emit zero-width-space or other fake assistant text.
+
 ## Usage and cost estimates
 
 Codex app-server token usage is mapped into OpenAI-compatible `usage` fields. When app-server usage is missing, the proxy estimates token counts locally and marks `usage.estimated=true`. The proxy also exposes simulated normal API-cost estimates in `usage.cost` / `usage.cost_usd`, response headers such as `X-Codex-Proxy-Total-Tokens` and `X-Codex-Proxy-Estimated-Cost-Usd`, Prometheus metrics, and `/pricing` / `/v1/pricing` for the pricing book. These are operational estimates only; Codex CLI/app-server still owns auth and subscription entitlement.

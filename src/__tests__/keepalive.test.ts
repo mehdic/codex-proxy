@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SSE_KEEPALIVE_COMMENT, maybeWriteSseKeepalive, guardedWrite, startSseKeepalive } from "../server/keepalive.js";
+import { SSE_KEEPALIVE_COMMENT, createSseKeepaliveComment, maybeWriteSseKeepalive, guardedWrite, startSseKeepalive } from "../server/keepalive.js";
 
-test("keepalive uses an SSE comment that does not create a data event", () => {
+test("keepalive uses SSE comments that do not create data events", () => {
   assert.equal(SSE_KEEPALIVE_COMMENT, ":ok\n\n");
+  assert.equal(createSseKeepaliveComment("req123", 2), ":keepalive req_id=req123 count=2\n\n");
 });
 
 test("keepalive writes only after the configured idle interval", () => {
@@ -28,8 +29,9 @@ test("keepalive writes only after the configured idle interval", () => {
     lastWriteMs: lastWrite,
     intervalMs: 10_000,
     write,
+    chunk: createSseKeepaliveComment("req123", 1),
   });
-  assert.deepEqual(writes, [":ok\n\n"]);
+  assert.deepEqual(writes, [":keepalive req_id=req123 count=1\n\n"]);
   assert.equal(lastWrite, 11_000);
 });
 

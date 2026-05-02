@@ -1,5 +1,5 @@
 import { buildPoolKey, type PoolWorker } from "./pool.js";
-import { CodexSubprocess, type CodexSubprocessOptions, type DeltaCallback, type TurnResult } from "./manager.js";
+import { CodexSubprocess, type CodexSubprocessOptions, type DeltaCallback, type NotificationCallback, type TurnResult } from "./manager.js";
 import { CONFIG } from "../server/config.js";
 import { CodexProxyError } from "../server/errors.js";
 import { recordSessionEvent, setSessionCount } from "../server/metrics.js";
@@ -11,6 +11,7 @@ export interface SessionWorker extends PoolWorker {
     userText: string,
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
+    notificationCallback?: NotificationCallback,
   ): Promise<TurnResult>;
 }
 
@@ -60,6 +61,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
     userText: string,
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
+    notificationCallback?: NotificationCallback,
   ): Promise<TurnResult> {
     const sanitized = validateSessionId(sessionId);
     if (!sanitized) {
@@ -85,7 +87,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
     const run = async () => {
       slot.inFlight = true;
       try {
-        const result = await slot.worker.submitTurnOnThread(slot.threadId, userText, options, deltaCallback);
+        const result = await slot.worker.submitTurnOnThread(slot.threadId, userText, options, deltaCallback, notificationCallback);
         slot.lastUsedAt = this.now();
         return result;
       } catch (err) {

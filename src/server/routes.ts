@@ -32,12 +32,12 @@ import {
   makeResponseTextDeltaEvent,
   makeResponseTextDoneEvent,
 } from "../adapter/codex-to-openai.js";
-import { CodexSubprocess, type CodexSubprocessOptions, type DeltaCallback, type TurnResult } from "../subprocess/manager.js";
+import { CodexSubprocess, type CodexSubprocessOptions, type DeltaCallback, type NotificationCallback, type TurnResult } from "../subprocess/manager.js";
 import { GLOBAL_CODEX_POOL, type PoolLease } from "../subprocess/pool.js";
 import { GLOBAL_CODEX_SESSIONS } from "../subprocess/session-pool.js";
 import { isPoolTransportFault } from "../subprocess/fallback.js";
 import { resolveRuntime, resolveSessionRequest, type RuntimeMode } from "../subprocess/runtime.js";
-import { startSseKeepalive, guardedWrite } from "./keepalive.js";
+import { startSseKeepalive, guardedWrite, createSseKeepaliveComment } from "./keepalive.js";
 import { incCounter, observeHistogram, recordFallback, recordRequest, renderMetrics } from "./metrics.js";
 import { CONFIG } from "./config.js";
 import { CodexProxyError, invalidRequestError, mapErrorToHttp } from "./errors.js";
@@ -45,6 +45,8 @@ import { NAME, VERSION } from "./version.js";
 import { annotateTurnUsage } from "./usage.js";
 import { pricingSnapshot } from "./pricing.js";
 import type { ChatCompletionRequest, ResponseRequest, ModelObject, ModelListResponse } from "../types/openai.js";
+import { attachPhaseTracker } from "./phase-tracker.js";
+import { createProgressChunk, hasRenderableAssistantContent } from "./progress-utils.js";
 
 type EndpointName = "chat_completions" | "responses";
 
@@ -178,21 +180,30 @@ export function createRouter(): Router {
           () => !res.writableEnded && res.writable,
         );
         safeWrite(":ok\n\n");
+        const streamId = requestId;
+        const phaseTracker = attachPhaseTracker();
         const keepalive = startSseKeepalive(CONFIG.keepaliveMs, safeWrite, () => lastStreamWrite, (next) => {
           lastStreamWrite = next;
+        }, (count) => {
+          const phase = phaseTracker.poll();
+          if (phase && hasRenderableAssistantContent(phase.text)) {
+            return chunkToSSE(createProgressChunk(streamId, model, `${phase.text}\n`));
+          }
+          return createSseKeepaliveComment(requestId, count);
         });
 
-        const streamId = requestId;
         const emulateTools = shouldEmulateOperationalTools(body);
+        const observeNotification: NotificationCallback = (method, params) => phaseTracker.observe(method, params);
         let result: TurnResult;
         try {
           result = await runTurn(prompt, options, runtime, "chat_completions", emulateTools ? undefined : (delta) => {
             const chunk = makeChatCompletionChunk(streamId, model, delta);
             safeWrite(chunkToSSE(chunk));
             lastStreamWrite = Date.now();
-          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined);
+          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined, observeNotification);
         } finally {
           if (keepalive) clearInterval(keepalive);
+          phaseTracker.detach();
         }
         status = "ok";
         annotateTurnUsage(result, prompt, model);
@@ -310,9 +321,7 @@ export function createRouter(): Router {
           () => !res.writableEnded && res.writable,
         );
         safeWrite(":ok\n\n");
-        const keepalive = startSseKeepalive(CONFIG.keepaliveMs, safeWrite, () => lastStreamWrite, (next) => {
-          lastStreamWrite = next;
-        });
+        const phaseTracker = attachPhaseTracker();
 
         const respId = `resp_${requestId}`;
         const outputId = `msg_${uuid()}`;
@@ -348,14 +357,26 @@ export function createRouter(): Router {
         }));
         lastStreamWrite = Date.now();
 
+        const keepalive = startSseKeepalive(CONFIG.keepaliveMs, safeWrite, () => lastStreamWrite, (next) => {
+          lastStreamWrite = next;
+        }, (count) => {
+          const phase = phaseTracker.poll();
+          if (phase && hasRenderableAssistantContent(phase.text)) {
+            return makeResponseTextDeltaEvent(0, 0, `${phase.text}\n`, { responseId: respId, itemId: outputId });
+          }
+          return createSseKeepaliveComment(requestId, count);
+        });
+
+        const observeNotification: NotificationCallback = (method, params) => phaseTracker.observe(method, params);
         let result: TurnResult;
         try {
           result = await runTurn(prompt, options, runtime, "responses", (delta) => {
             safeWrite(makeResponseTextDeltaEvent(0, 0, delta, { responseId: respId, itemId: outputId }));
             lastStreamWrite = Date.now();
-          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined);
+          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined, observeNotification);
         } finally {
           if (keepalive) clearInterval(keepalive);
+          phaseTracker.detach();
         }
         status = "ok";
         annotateTurnUsage(result, prompt, model);
@@ -469,13 +490,14 @@ async function runTurn(
   allowFallback = true,
   signal?: AbortSignal,
   sessionId?: string,
+  notificationCallback?: NotificationCallback,
 ): Promise<TurnResult> {
   if (sessionId) {
-    return runTurnOnce(prompt, options, runtime, deltaCallback, signal, sessionId);
+    return runTurnOnce(prompt, options, runtime, deltaCallback, signal, sessionId, notificationCallback);
   }
 
   try {
-    return await runTurnOnce(prompt, options, runtime, deltaCallback, signal);
+    return await runTurnOnce(prompt, options, runtime, deltaCallback, signal, undefined, notificationCallback);
   } catch (err) {
     if (
       runtime === "pool"
@@ -485,7 +507,7 @@ async function runTurn(
     ) {
       recordFallback("pool_failure");
       incCounter("codex_proxy_errors_total", { endpoint, model: options.model, runtime: "pool" });
-      return runTurnOnce(prompt, options, "oneshot", deltaCallback, signal);
+      return runTurnOnce(prompt, options, "oneshot", deltaCallback, signal, undefined, notificationCallback);
     }
     throw err;
   }
@@ -498,9 +520,10 @@ async function runTurnOnce(
   deltaCallback?: DeltaCallback,
   signal?: AbortSignal,
   sessionId?: string,
+  notificationCallback?: NotificationCallback,
 ): Promise<TurnResult> {
   if (sessionId) {
-    const turn = GLOBAL_CODEX_SESSIONS.runTurn(sessionId, prompt, options, deltaCallback);
+    const turn = GLOBAL_CODEX_SESSIONS.runTurn(sessionId, prompt, options, deltaCallback, notificationCallback);
     return await withAbort(turn, signal, () => GLOBAL_CODEX_SESSIONS.abortSession(sessionId, options));
   }
 
@@ -509,8 +532,8 @@ async function runTurnOnce(
     try {
       await subprocess.start(options);
       const turn = deltaCallback
-        ? subprocess.submitTurnStreaming(prompt, options, deltaCallback)
-        : subprocess.submitTurn(prompt, options);
+        ? subprocess.submitTurnStreaming(prompt, options, deltaCallback, notificationCallback)
+        : subprocess.submitTurn(prompt, options, deltaCallback, notificationCallback);
       return await withAbort(turn, signal, () => subprocess.kill("SIGTERM", "killed"));
     } finally {
       subprocess.kill();
@@ -521,8 +544,8 @@ async function runTurnOnce(
   try {
     lease = await GLOBAL_CODEX_POOL.acquire(options);
     const turn = deltaCallback
-      ? lease.worker.submitTurnStreaming(prompt, options, deltaCallback)
-      : lease.worker.submitTurn(prompt, options);
+      ? lease.worker.submitTurnStreaming(prompt, options, deltaCallback, notificationCallback)
+      : lease.worker.submitTurn(prompt, options, deltaCallback, notificationCallback);
     const result = await withAbort(turn, signal, () => lease?.worker.kill("SIGTERM", "killed"));
     GLOBAL_CODEX_POOL.release(lease, true);
     lease = null;

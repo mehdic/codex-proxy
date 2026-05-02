@@ -67,6 +67,7 @@ export interface TurnResult {
 }
 
 export type DeltaCallback = (delta: string) => void;
+export type NotificationCallback = (method: string, params: unknown) => void;
 
 // ── Manager ─────────────────────────────────────────────────────────
 
@@ -193,6 +194,7 @@ export class CodexSubprocess {
     userText: string,
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
+    notificationCallback?: NotificationCallback,
   ): Promise<TurnResult> {
     if (this.dead) throw new CodexProxyError("codex", "app-server process is dead", { detail: this.stderr });
 
@@ -215,6 +217,7 @@ export class CodexSubprocess {
       handler = (method: string, params: unknown) => {
         const p = params as Record<string, unknown>;
         if (p.threadId !== threadId) return;
+        notificationCallback?.(method, params);
 
         switch (method) {
           case "item/agentMessage/delta": {
@@ -318,9 +321,10 @@ export class CodexSubprocess {
     userText: string,
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
+    notificationCallback?: NotificationCallback,
   ): Promise<TurnResult> {
     const threadId = await this.startThread(options, true);
-    return this.submitTurnOnThread(threadId, userText, options, deltaCallback);
+    return this.submitTurnOnThread(threadId, userText, options, deltaCallback, notificationCallback);
   }
 
   /**
@@ -331,8 +335,9 @@ export class CodexSubprocess {
     userText: string,
     options: CodexSubprocessOptions,
     deltaCallback: DeltaCallback,
+    notificationCallback?: NotificationCallback,
   ): Promise<TurnResult> {
-    return this.submitTurn(userText, options, deltaCallback);
+    return this.submitTurn(userText, options, deltaCallback, notificationCallback);
   }
 
   /**
