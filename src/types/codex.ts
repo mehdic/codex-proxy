@@ -104,11 +104,23 @@ export interface ThreadStartResponse {
 
 // ── Turn ────────────────────────────────────────────────────────────
 
-export interface UserInput {
+export interface UserTextInput {
   type: "text";
   text: string;
   text_elements: unknown[];
 }
+
+export interface UserImageInput {
+  type: "image";
+  url: string;
+}
+
+export interface UserLocalImageInput {
+  type: "localImage";
+  path: string;
+}
+
+export type UserInput = UserTextInput | UserImageInput | UserLocalImageInput;
 
 export interface TurnStartParams {
   threadId: string;

@@ -17,6 +17,7 @@ import type {
   ResponseInputReasoning,
 } from "../types/openai.js";
 import type { CodexSubprocessOptions } from "../subprocess/manager.js";
+import type { UserInput, UserImageInput } from "../types/codex.js";
 
 // ── Default and known models ────────────────────────────────────────
 
@@ -46,9 +47,11 @@ export function resolveModel(model?: string | null): string {
 export function chatMessagesToPrompt(messages: ChatMessage[]): {
   prompt: string;
   systemInstruction: string | null;
+  imageInputs: UserImageInput[];
 } {
   let systemInstruction: string | null = null;
   const parts: string[] = [];
+  let imageInputs: UserImageInput[] = [];
 
   for (const msg of messages) {
     const text = extractMessageText(msg);
@@ -74,6 +77,8 @@ export function chatMessagesToPrompt(messages: ChatMessage[]): {
       }
       case "user":
         parts.push(text);
+        // Collect image inputs from the last user message
+        imageInputs = extractImageInputs(msg);
         break;
     }
   }
@@ -81,6 +86,7 @@ export function chatMessagesToPrompt(messages: ChatMessage[]): {
   return {
     prompt: parts.join("\n"),
     systemInstruction,
+    imageInputs,
   };
 }
 
@@ -90,13 +96,16 @@ export function chatMessagesToPrompt(messages: ChatMessage[]): {
 export function chatRequestToOptions(
   req: ChatCompletionRequest,
   defaults?: Partial<CodexSubprocessOptions>,
-): { prompt: string; options: CodexSubprocessOptions } {
+): { prompt: string; imageUrls: string[]; options: CodexSubprocessOptions } {
   const model = resolveModel(req.model);
-  const { prompt, systemInstruction } = chatMessagesToPrompt(req.messages);
+  const { prompt, systemInstruction, imageInputs } = chatMessagesToPrompt(req.messages);
   const finalPrompt = appendToolInstructions(appendStructuredOutputInstruction(prompt, req), req);
+
+  const imageUrls = imageInputs.map((img) => img.url);
 
   return {
     prompt: finalPrompt,
+    imageUrls,
     options: {
       model,
       instructions: systemInstruction || defaults?.instructions,
@@ -493,6 +502,17 @@ function escapeXmlAttribute(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/**
+ * Extract image_url data URLs from a user message's content parts.
+ * Returns Codex app-server UserImageInput items.
+ */
+export function extractImageInputs(msg: ChatMessage): UserImageInput[] {
+  if (!Array.isArray(msg.content)) return [];
+  return msg.content
+    .filter((p) => p.type === "image_url" && p.image_url?.url)
+    .map((p) => ({ type: "image" as const, url: p.image_url!.url }));
+}
+
 function extractMessageText(msg: ChatMessage): string {
   if (typeof msg.content === "string") return msg.content;
   if (!msg.content) {
@@ -507,6 +527,17 @@ function extractMessageText(msg: ChatMessage): string {
     .filter((p) => p.type === "text" && p.text)
     .map((p) => p.text!)
     .join("\n");
+}
+
+/**
+ * Extract image data URLs from a user message's content parts.
+ * Returns an array of data: URLs (base64-encoded images).
+ */
+export function extractImageUrls(msg: ChatMessage): string[] {
+  if (!msg.content || typeof msg.content === "string") return [];
+  return msg.content
+    .filter((p) => p.type === "image_url" && p.image_url?.url)
+    .map((p) => p.image_url!.url);
 }
 
 // ── Model label canonicalization for metrics ────────────────────────

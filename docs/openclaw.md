@@ -58,7 +58,7 @@ If your OpenClaw build supports the Responses API, use the same `baseUrl` with `
 
 Streaming responses send an initial `:ok` SSE comment and idle `:keepalive req_id=... count=...` comments. These are transport-only SSE comments that keep the connection alive without producing visible text.
 
-When Codex app-server reports real long-running work (shell commands, file changes), the keepalive path emits visible, newline-terminated progress deltas instead: `[progress: using shell…]\n`, `[progress: waiting for shell, 12s…]\n`, etc. These are standard assistant-content chunks (Chat Completions `data:` deltas / Responses `response.output_text.delta` events), so OpenClaw's streaming preview surfaces them in the Telegram chat as a live typing indicator while Codex is working. The proxy never uses zero-width characters, empty deltas, or other invisible padding as fake progress.
+When Codex app-server reports real long-running work (shell commands, file changes), the keepalive path emits visible, newline-terminated progress deltas instead: `[Working: using shell…]\n`, `[Working: waiting for shell, 12s…]\n`, etc. These are standard assistant-content chunks (Chat Completions `data:` deltas / Responses `response.output_text.delta` events), so OpenClaw's streaming preview surfaces them in the Telegram chat as a live typing indicator while Codex is working. The proxy never uses zero-width characters, empty deltas, or other invisible padding as fake progress.
 
 ## Usage and cost estimates
 

@@ -74,7 +74,7 @@ export class PhaseTracker {
       const key = `using:${this.active.itemId}:${this.active.label}`;
       this.active.lastReportedKey = key;
       return {
-        text: `[progress: using ${this.active.label}…]`,
+        text: `[Working: using ${this.active.label}…]`,
         kind: "phase",
         itemId: this.active.itemId,
         label: this.active.label,
@@ -86,7 +86,7 @@ export class PhaseTracker {
       this.active.waitReported = true;
       const seconds = Math.max(1, Math.round(elapsedMs / 1000));
       return {
-        text: `[progress: waiting for ${this.active.label}, ${seconds}s…]`,
+        text: `[Working: waiting for ${this.active.label}, ${seconds}s…]`,
         kind: "wait",
         itemId: this.active.itemId,
         label: this.active.label,

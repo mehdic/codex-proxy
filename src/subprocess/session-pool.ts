@@ -12,6 +12,7 @@ export interface SessionWorker extends PoolWorker {
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
     notificationCallback?: NotificationCallback,
+    imageUrls?: string[],
   ): Promise<TurnResult>;
 }
 
@@ -62,6 +63,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
     notificationCallback?: NotificationCallback,
+    imageUrls?: string[],
   ): Promise<TurnResult> {
     const sanitized = validateSessionId(sessionId);
     if (!sanitized) {
@@ -87,7 +89,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
     const run = async () => {
       slot.inFlight = true;
       try {
-        const result = await slot.worker.submitTurnOnThread(slot.threadId, userText, options, deltaCallback, notificationCallback);
+        const result = await slot.worker.submitTurnOnThread(slot.threadId, userText, options, deltaCallback, notificationCallback, imageUrls);
         slot.lastUsedAt = this.now();
         return result;
       } catch (err) {

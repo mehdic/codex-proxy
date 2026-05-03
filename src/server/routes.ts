@@ -156,7 +156,7 @@ export function createRouter(): Router {
       return;
     }
 
-    const { prompt, options } = chatRequestToOptions(body, {
+    const { prompt, imageUrls, options } = chatRequestToOptions(body, {
       timeoutMs: CONFIG.defaultTimeoutMs,
       initTimeoutMs: CONFIG.initTimeoutMs,
       turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
@@ -200,7 +200,7 @@ export function createRouter(): Router {
             const chunk = makeChatCompletionChunk(streamId, model, delta);
             safeWrite(chunkToSSE(chunk));
             lastStreamWrite = Date.now();
-          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined, observeNotification);
+          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined, observeNotification, imageUrls);
         } finally {
           if (keepalive) clearInterval(keepalive);
           phaseTracker.detach();
@@ -239,6 +239,8 @@ export function createRouter(): Router {
           true,
           abortController.signal,
           session.kind === "session" ? session.sessionId : undefined,
+          undefined,
+          imageUrls,
         );
         annotateTurnUsage(result, prompt, model);
         const requestedTool = requestedFunctionTool(body);
@@ -491,13 +493,14 @@ async function runTurn(
   signal?: AbortSignal,
   sessionId?: string,
   notificationCallback?: NotificationCallback,
+  imageUrls?: string[],
 ): Promise<TurnResult> {
   if (sessionId) {
-    return runTurnOnce(prompt, options, runtime, deltaCallback, signal, sessionId, notificationCallback);
+    return runTurnOnce(prompt, options, runtime, deltaCallback, signal, sessionId, notificationCallback, imageUrls);
   }
 
   try {
-    return await runTurnOnce(prompt, options, runtime, deltaCallback, signal, undefined, notificationCallback);
+    return await runTurnOnce(prompt, options, runtime, deltaCallback, signal, undefined, notificationCallback, imageUrls);
   } catch (err) {
     if (
       runtime === "pool"
@@ -507,7 +510,7 @@ async function runTurn(
     ) {
       recordFallback("pool_failure");
       incCounter("codex_proxy_errors_total", { endpoint, model: options.model, runtime: "pool" });
-      return runTurnOnce(prompt, options, "oneshot", deltaCallback, signal, undefined, notificationCallback);
+      return runTurnOnce(prompt, options, "oneshot", deltaCallback, signal, undefined, notificationCallback, imageUrls);
     }
     throw err;
   }
@@ -521,9 +524,10 @@ async function runTurnOnce(
   signal?: AbortSignal,
   sessionId?: string,
   notificationCallback?: NotificationCallback,
+  imageUrls?: string[],
 ): Promise<TurnResult> {
   if (sessionId) {
-    const turn = GLOBAL_CODEX_SESSIONS.runTurn(sessionId, prompt, options, deltaCallback, notificationCallback);
+    const turn = GLOBAL_CODEX_SESSIONS.runTurn(sessionId, prompt, options, deltaCallback, notificationCallback, imageUrls);
     return await withAbort(turn, signal, () => GLOBAL_CODEX_SESSIONS.abortSession(sessionId, options));
   }
 
@@ -532,8 +536,8 @@ async function runTurnOnce(
     try {
       await subprocess.start(options);
       const turn = deltaCallback
-        ? subprocess.submitTurnStreaming(prompt, options, deltaCallback, notificationCallback)
-        : subprocess.submitTurn(prompt, options, deltaCallback, notificationCallback);
+        ? subprocess.submitTurnStreaming(prompt, options, deltaCallback, notificationCallback, imageUrls)
+        : subprocess.submitTurn(prompt, options, deltaCallback, notificationCallback, imageUrls);
       return await withAbort(turn, signal, () => subprocess.kill("SIGTERM", "killed"));
     } finally {
       subprocess.kill();
@@ -544,8 +548,8 @@ async function runTurnOnce(
   try {
     lease = await GLOBAL_CODEX_POOL.acquire(options);
     const turn = deltaCallback
-      ? lease.worker.submitTurnStreaming(prompt, options, deltaCallback, notificationCallback)
-      : lease.worker.submitTurn(prompt, options, deltaCallback, notificationCallback);
+      ? lease.worker.submitTurnStreaming(prompt, options, deltaCallback, notificationCallback, imageUrls)
+      : lease.worker.submitTurn(prompt, options, deltaCallback, notificationCallback, imageUrls);
     const result = await withAbort(turn, signal, () => lease?.worker.kill("SIGTERM", "killed"));
     GLOBAL_CODEX_POOL.release(lease, true);
     lease = null;
