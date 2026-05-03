@@ -13,9 +13,13 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { v4 as uuid } from "uuid";
 import { appendAssistantText, extractDeltaText } from "../adapter/codex-to-openai.js";
 import { CONFIG } from "../server/config.js";
+import type { UserInput, UserImageInput } from "../types/codex.js";
 import { CodexProxyError } from "../server/errors.js";
 import { recordSubprocessExit } from "../server/metrics.js";
 import { VERSION } from "../server/version.js";
@@ -195,6 +199,7 @@ export class CodexSubprocess {
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
     notificationCallback?: NotificationCallback,
+    imageUrls?: string[],
   ): Promise<TurnResult> {
     if (this.dead) throw new CodexProxyError("codex", "app-server process is dead", { detail: this.stderr });
 
@@ -289,27 +294,44 @@ export class CodexSubprocess {
       this.addNotificationHandler(handler);
     });
 
-    // Start turn
+    // Start turn — build input array with text and optional image items.
+    // data: URLs are written to temp files and sent as localImage because
+    // the codex app-server cannot fetch data: URLs over HTTP.
+    const tempFiles: string[] = [];
+    const input: unknown[] = [
+      { type: "text", text: userText, text_elements: [] },
+    ];
+    if (imageUrls && imageUrls.length > 0) {
+      for (const url of imageUrls) {
+        if (url.startsWith("data:")) {
+          try {
+            const tempPath = dataUrlToTempFile(url, tempFiles);
+            input.push({ type: "localImage", path: tempPath });
+          } catch {
+            // Fall back to remote image if temp file write fails
+            input.push({ type: "image", url });
+          }
+        } else {
+          input.push({ type: "image", url });
+        }
+      }
+    }
+
     try {
       await this.sendRequest<TurnStartResponse>("turn/start", {
         threadId,
-        input: [
-          {
-            type: "text",
-            text: userText,
-            text_elements: [],
-          },
-        ],
+        input,
         model: options.model,
       }, options.turnStartTimeoutMs || CONFIG.turnStartTimeoutMs);
     } catch (err) {
       clearTimeout(timeout!);
       this.removeNotificationHandler(handler!);
       this.kill("SIGTERM", "killed");
+      cleanupTempFiles(tempFiles);
       throw err;
     }
 
-    return turnPromise;
+    return turnPromise.finally(() => cleanupTempFiles(tempFiles));
   }
 
   /**
@@ -322,9 +344,10 @@ export class CodexSubprocess {
     options: CodexSubprocessOptions,
     deltaCallback?: DeltaCallback,
     notificationCallback?: NotificationCallback,
+    imageUrls?: string[],
   ): Promise<TurnResult> {
     const threadId = await this.startThread(options, true);
-    return this.submitTurnOnThread(threadId, userText, options, deltaCallback, notificationCallback);
+    return this.submitTurnOnThread(threadId, userText, options, deltaCallback, notificationCallback, imageUrls);
   }
 
   /**
@@ -336,8 +359,9 @@ export class CodexSubprocess {
     options: CodexSubprocessOptions,
     deltaCallback: DeltaCallback,
     notificationCallback?: NotificationCallback,
+    imageUrls?: string[],
   ): Promise<TurnResult> {
-    return this.submitTurn(userText, options, deltaCallback, notificationCallback);
+    return this.submitTurn(userText, options, deltaCallback, notificationCallback, imageUrls);
   }
 
   /**
@@ -497,3 +521,47 @@ export class CodexSubprocess {
     return this.stderrText;
   }
 }
+
+// ── Image helpers ────────────────────────────────────────────────────
+
+/**
+ * Write a data URL to a temp file and record the path for cleanup.
+ * Returns the temp file path.
+ */
+function dataUrlToTempFile(dataUrl: string, tempFiles: string[]): string {
+  // data:[<mediatype>][;base64],<data>
+  const commaIdx = dataUrl.indexOf(",");
+  if (commaIdx === -1) throw new Error("Invalid data URL: no comma separator");
+  const header = dataUrl.slice(5, commaIdx); // strip "data:"
+  const isBase64 = header.endsWith(";base64");
+  const mimeType = isBase64 ? header.slice(0, -7) : header;
+  const data = dataUrl.slice(commaIdx + 1);
+
+  // Derive extension from MIME type
+  const ext = mimeTypeToExtension(mimeType);
+  const tempPath = join(tmpdir(), `codex-image-${uuid()}${ext}`);
+  const buf = isBase64 ? Buffer.from(data, "base64") : Buffer.from(decodeURIComponent(data));
+  writeFileSync(tempPath, buf);
+  tempFiles.push(tempPath);
+  return tempPath;
+}
+
+function mimeTypeToExtension(mimeType: string): string {
+  switch (mimeType.split(";")[0].trim().toLowerCase()) {
+    case "image/png": return ".png";
+    case "image/jpeg": return ".jpg";
+    case "image/jpg": return ".jpg";
+    case "image/gif": return ".gif";
+    case "image/webp": return ".webp";
+    case "image/bmp": return ".bmp";
+    case "image/tiff": return ".tiff";
+    default: return ".bin";
+  }
+}
+
+function cleanupTempFiles(paths: string[]): void {
+  for (const p of paths) {
+    try { unlinkSync(p); } catch { /* ignore */ }
+  }
+}
+
