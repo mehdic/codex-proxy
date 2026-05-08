@@ -80,7 +80,7 @@ test("responsesRequestToOptions handles string input", () => {
 });
 
 test("responsesRequestToOptions flattens mixed Responses content parts", () => {
-  const { prompt } = responsesRequestToOptions({
+  const { prompt, imageUrls } = responsesRequestToOptions({
     model: "gpt-5.5",
     input: [{
       type: "message",
@@ -97,6 +97,7 @@ test("responsesRequestToOptions flattens mixed Responses content parts", () => {
 
   assert.match(prompt, /Describe these artifacts\./);
   assert.match(prompt, /\[input_image url=https:\/\/example\.com\/image\.png detail=high\]/);
+  assert.deepEqual(imageUrls, ["https://example.com/image.png"]);
   assert.match(prompt, /\[input_file filename=brief\.pdf file_id=file_123\]/);
   assert.match(prompt, /\[input_audio format=mp3 transcript=spoken context data=present\]/);
   assert.match(prompt, /\[unsupported_content_part type=unknown_future_part\]/);

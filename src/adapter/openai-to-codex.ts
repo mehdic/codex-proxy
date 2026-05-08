@@ -126,18 +126,21 @@ export function chatRequestToOptions(
 export function responsesRequestToOptions(
   req: ResponseRequest,
   defaults?: Partial<CodexSubprocessOptions>,
-): { prompt: string; options: CodexSubprocessOptions } {
+): { prompt: string; imageUrls: string[]; options: CodexSubprocessOptions } {
   const model = resolveModel(req.model);
   let prompt: string;
+  let imageUrls: string[] = [];
 
   if (typeof req.input === "string") {
     prompt = req.input;
   } else {
     prompt = responsesInputToPrompt(req.input);
+    imageUrls = extractResponsesImageUrls(req.input);
   }
 
   return {
     prompt: appendToolInstructions(appendStructuredOutputInstruction(prompt, req), req),
+    imageUrls,
     options: {
       model,
       instructions: req.instructions || defaults?.instructions,
@@ -538,6 +541,37 @@ export function extractImageUrls(msg: ChatMessage): string[] {
   return msg.content
     .filter((p) => p.type === "image_url" && p.image_url?.url)
     .map((p) => p.image_url!.url);
+}
+
+/**
+ * Extract image data/remote URLs from Responses API message content parts.
+ * The prompt still contains a small marker for context, but the real bytes must
+ * travel separately as Codex image inputs or vision silently degrades to text.
+ */
+export function extractResponsesImageUrls(items: ResponseInputItem[]): string[] {
+  const urls: string[] = [];
+  for (const item of items) {
+    const msg = item as ResponseInputMessage;
+    if (!msg || typeof msg.content === "string" || !Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      const url = responseImagePartUrl(part);
+      if (url) urls.push(url);
+    }
+  }
+  return urls;
+}
+
+function responseImagePartUrl(part: ResponseContentPart): string | null {
+  if (!part || typeof part !== "object") return null;
+  const p = part as Record<string, unknown>;
+  if (p.type !== "input_image" && p.type !== "image_url") return null;
+  const imageUrl = p.image_url;
+  if (typeof imageUrl === "string" && imageUrl) return imageUrl;
+  if (imageUrl && typeof imageUrl === "object") {
+    const url = (imageUrl as Record<string, unknown>).url;
+    if (typeof url === "string" && url) return url;
+  }
+  return null;
 }
 
 // ── Model label canonicalization for metrics ────────────────────────

@@ -299,7 +299,7 @@ export function createRouter(): Router {
       return;
     }
 
-    const { prompt, options } = responsesRequestToOptions(body, {
+    const { prompt, imageUrls, options } = responsesRequestToOptions(body, {
       timeoutMs: CONFIG.defaultTimeoutMs,
       initTimeoutMs: CONFIG.initTimeoutMs,
       turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
@@ -375,7 +375,7 @@ export function createRouter(): Router {
           result = await runTurn(prompt, options, runtime, "responses", (delta) => {
             safeWrite(makeResponseTextDeltaEvent(0, 0, delta, { responseId: respId, itemId: outputId }));
             lastStreamWrite = Date.now();
-          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined, observeNotification);
+          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined, observeNotification, imageUrls);
         } finally {
           if (keepalive) clearInterval(keepalive);
           phaseTracker.detach();
@@ -438,6 +438,8 @@ export function createRouter(): Router {
           true,
           abortController.signal,
           session.kind === "session" ? session.sessionId : undefined,
+          undefined,
+          imageUrls,
         );
         annotateTurnUsage(result, prompt, model);
         const response = turnResultToResponseObject(result, model, {

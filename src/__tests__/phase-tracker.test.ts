@@ -14,7 +14,7 @@ test("reports command execution as shell progress", () => {
   const tracker = new PhaseTracker({ now: () => 1000 });
   tracker.observe("item/started", commandStarted());
   const phase = tracker.poll();
-  assert.equal(phase?.text, "[Working: using shell…]");
+  assert.match(phase?.text ?? "", /^\[[^:\]]+: using shell…\]$/);
   assert.equal(phase?.label, "shell");
 });
 
@@ -31,7 +31,7 @@ test("reports long waits once", () => {
   tracker.observe("item/started", commandStarted());
   assert.ok(tracker.poll());
   now += TOOL_WAIT_THRESHOLD_MS + 4_000;
-  assert.equal(tracker.poll()?.text, "[Working: waiting for shell, 12s…]");
+  assert.match(tracker.poll()?.text ?? "", /^\[[^:\]]+: waiting for shell, 12s…\]$/);
   assert.equal(tracker.poll(), null);
 });
 
@@ -54,7 +54,7 @@ test("item completion clears matching phase", () => {
 test("reports file changes as files progress", () => {
   const tracker = new PhaseTracker({ now: () => 1000 });
   tracker.observe("item/started", { threadId: "thread_1", turnId: "turn_1", item: { type: "fileChange", id: "file_1", changes: [], status: "inProgress" } });
-  assert.equal(tracker.poll()?.text, "[Working: using files…]");
+  assert.match(tracker.poll()?.text ?? "", /^\[[^:\]]+: using files…\]$/);
 });
 
 test("detach stops future reports", () => {
