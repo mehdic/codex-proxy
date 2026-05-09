@@ -15,7 +15,11 @@ type RuntimeLabel = "pool" | "oneshot";
 type ExitReason = "clean" | "signal" | "error" | "timeout" | "killed" | "unknown";
 type PoolEvent = "warm_hit" | "cold_spawn" | "ttl_eviction" | "lru_eviction" | "stale_eviction" | "prewarm_error";
 type FallbackReason = "pool_failure";
-type SessionEvent = "hit" | "miss" | "created" | "evicted" | "expired" | "rejected";
+type SessionEvent = "hit" | "miss" | "created" | "evicted" | "expired" | "rejected" | "reset";
+type StickyEvictionReason = "idle_ttl" | "absolute_ttl" | "lru" | "unhealthy" | "reset" | "client_disconnect" | "turn_error" | "evicted";
+type StickyBusyReason = "active" | "capacity" | "queue_timeout";
+type SessionModeLabel = "pool" | "sticky" | "stateless";
+type ModeStatusLabel = "accepted" | "rejected";
 
 interface RequestRecord {
   endpoint: string;
@@ -53,7 +57,30 @@ const sessionEvents: Record<SessionEvent, number> = {
   evicted: 0,
   expired: 0,
   rejected: 0,
+  reset: 0,
 };
+const stickyEvictions: Record<StickyEvictionReason, number> = {
+  idle_ttl: 0,
+  absolute_ttl: 0,
+  lru: 0,
+  unhealthy: 0,
+  reset: 0,
+  client_disconnect: 0,
+  turn_error: 0,
+  evicted: 0,
+};
+const stickyBusy: Record<StickyBusyReason, number> = {
+  active: 0,
+  capacity: 0,
+  queue_timeout: 0,
+};
+const stickyModes: Record<SessionModeLabel, Record<ModeStatusLabel, number>> = {
+  pool: { accepted: 0, rejected: 0 },
+  sticky: { accepted: 0, rejected: 0 },
+  stateless: { accepted: 0, rejected: 0 },
+};
+let stickyHits = 0;
+let stickyColdStarts = 0;
 let poolSize = 0;
 let activeSessions = 0;
 const subprocessExits: Record<ExitReason, number> = {
@@ -124,6 +151,26 @@ export function recordSessionEvent(event: string): void {
   sessionEvents[label]++;
 }
 
+export function recordStickySessionHit(): void {
+  stickyHits++;
+}
+
+export function recordStickySessionStart(): void {
+  stickyColdStarts++;
+}
+
+export function recordStickySessionEviction(reason: string): void {
+  stickyEvictions[canonicalStickyEviction(reason)]++;
+}
+
+export function recordStickySessionBusy(reason: string): void {
+  stickyBusy[canonicalStickyBusy(reason)]++;
+}
+
+export function recordStickySessionMode(mode: string, status: string): void {
+  stickyModes[canonicalSessionMode(mode)][status === "rejected" ? "rejected" : "accepted"]++;
+}
+
 export function recordTokenUsage(model: string, usage: TokenUsageBreakdown, cost: UsageCostEstimate | undefined, estimated: boolean): void {
   const labels = { model: canonicalModelLabel(model), estimated: estimated ? "true" : "false" };
   addLabeled(tokenCounters, "codex_proxy_tokens_total", usage.inputTokens || 0, { ...labels, direction: "input" });
@@ -189,9 +236,48 @@ function canonicalSessionEvent(event: string): SessionEvent {
     case "evicted":
     case "expired":
     case "rejected":
+    case "reset":
       return event;
     default:
       return "rejected";
+  }
+}
+
+function canonicalStickyEviction(reason: string): StickyEvictionReason {
+  switch (reason) {
+    case "idle_ttl":
+    case "absolute_ttl":
+    case "lru":
+    case "unhealthy":
+    case "reset":
+    case "client_disconnect":
+    case "turn_error":
+    case "evicted":
+      return reason;
+    default:
+      return "evicted";
+  }
+}
+
+function canonicalStickyBusy(reason: string): StickyBusyReason {
+  switch (reason) {
+    case "active":
+    case "capacity":
+    case "queue_timeout":
+      return reason;
+    default:
+      return "active";
+  }
+}
+
+function canonicalSessionMode(mode: string): SessionModeLabel {
+  switch (mode) {
+    case "sticky":
+    case "stateless":
+    case "pool":
+      return mode;
+    default:
+      return "pool";
   }
 }
 
@@ -206,6 +292,11 @@ function canonicalExitReason(reason: string): ExitReason {
     default:
       return "unknown";
   }
+}
+
+function stickyMaxSessionsForMetrics(): number {
+  const parsed = Number.parseInt(process.env.CODEX_PROXY_STICKY_MAX_SESSIONS || process.env.CODEX_PROXY_SESSION_MAX || "32", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 32;
 }
 
 function safeLabel(value: string): string {
@@ -312,6 +403,37 @@ export function renderMetrics(): string {
   lines.push("# TYPE codex_proxy_active_sessions gauge");
   lines.push(`codex_proxy_active_sessions ${activeSessions}`);
 
+  lines.push("# HELP codex_proxy_sticky_pool_size Live sessions in the opt-in sticky session pool");
+  lines.push("# TYPE codex_proxy_sticky_pool_size gauge");
+  lines.push(`codex_proxy_sticky_pool_size{state="live"} ${activeSessions}`);
+  lines.push(`codex_proxy_sticky_pool_size{state="max"} ${stickyMaxSessionsForMetrics()}`);
+
+  lines.push("# HELP codex_proxy_sticky_pool_enabled 1 when sticky sessions are enabled");
+  lines.push("# TYPE codex_proxy_sticky_pool_enabled gauge");
+  lines.push(`codex_proxy_sticky_pool_enabled ${process.env.CODEX_PROXY_STICKY_SESSIONS === "1" || process.env.CODEX_PROXY_SESSIONS === "1" ? 1 : 0}`);
+
+  lines.push("# HELP codex_proxy_sticky_session_hits_total Sticky requests served from an existing live Codex session");
+  lines.push("# TYPE codex_proxy_sticky_session_hits_total counter");
+  lines.push(`codex_proxy_sticky_session_hits_total ${stickyHits}`);
+
+  lines.push("# HELP codex_proxy_sticky_session_cold_starts_total Sticky requests that created a new live Codex session");
+  lines.push("# TYPE codex_proxy_sticky_session_cold_starts_total counter");
+  lines.push(`codex_proxy_sticky_session_cold_starts_total ${stickyColdStarts}`);
+
+  lines.push("# HELP codex_proxy_sticky_session_evictions_total Sticky session evictions by bounded reason");
+  lines.push("# TYPE codex_proxy_sticky_session_evictions_total counter");
+  for (const [reason, count] of Object.entries(stickyEvictions)) lines.push(`codex_proxy_sticky_session_evictions_total{reason="${reason}"} ${count}`);
+
+  lines.push("# HELP codex_proxy_sticky_session_busy_total Sticky session busy/rejection events by bounded reason");
+  lines.push("# TYPE codex_proxy_sticky_session_busy_total counter");
+  for (const [reason, count] of Object.entries(stickyBusy)) lines.push(`codex_proxy_sticky_session_busy_total{reason="${reason}"} ${count}`);
+
+  lines.push("# HELP codex_proxy_session_mode_total Session mode decisions by bounded mode and status");
+  lines.push("# TYPE codex_proxy_session_mode_total counter");
+  for (const [mode, statuses] of Object.entries(stickyModes)) {
+    for (const [status, count] of Object.entries(statuses)) lines.push(`codex_proxy_session_mode_total{mode="${mode}",status="${status}"} ${count}`);
+  }
+
   lines.push("# HELP codex_proxy_uptime_seconds Proxy uptime in seconds");
   lines.push("# TYPE codex_proxy_uptime_seconds gauge");
   lines.push(`codex_proxy_uptime_seconds ${Math.floor(process.uptime())}`);
@@ -330,6 +452,14 @@ export function resetMetrics(): void {
   for (const key of Object.keys(poolEvents) as PoolEvent[]) poolEvents[key] = 0;
   for (const key of Object.keys(fallbacks) as FallbackReason[]) fallbacks[key] = 0;
   for (const key of Object.keys(sessionEvents) as SessionEvent[]) sessionEvents[key] = 0;
+  for (const key of Object.keys(stickyEvictions) as StickyEvictionReason[]) stickyEvictions[key] = 0;
+  for (const key of Object.keys(stickyBusy) as StickyBusyReason[]) stickyBusy[key] = 0;
+  for (const mode of Object.keys(stickyModes) as SessionModeLabel[]) {
+    stickyModes[mode].accepted = 0;
+    stickyModes[mode].rejected = 0;
+  }
+  stickyHits = 0;
+  stickyColdStarts = 0;
   poolSize = 0;
   activeSessions = 0;
   for (const key of Object.keys(subprocessExits) as ExitReason[]) subprocessExits[key] = 0;

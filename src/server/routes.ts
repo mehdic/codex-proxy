@@ -34,11 +34,12 @@ import {
 } from "../adapter/codex-to-openai.js";
 import { CodexSubprocess, type CodexSubprocessOptions, type DeltaCallback, type NotificationCallback, type TurnResult } from "../subprocess/manager.js";
 import { GLOBAL_CODEX_POOL, type PoolLease } from "../subprocess/pool.js";
-import { GLOBAL_CODEX_SESSIONS } from "../subprocess/session-pool.js";
+import { GLOBAL_CODEX_SESSIONS, stickyPoolStats, type StickySessionRunOptions } from "../subprocess/session-pool.js";
 import { isPoolTransportFault } from "../subprocess/fallback.js";
-import { resolveRuntime, resolveSessionRequest, type RuntimeMode } from "../subprocess/runtime.js";
+import { resolveRuntime, type RuntimeMode } from "../subprocess/runtime.js";
+import { resolveSessionOptions, type ResolvedSessionOptions } from "./sticky-options.js";
 import { startSseKeepalive, guardedWrite, createSseKeepaliveComment } from "./keepalive.js";
-import { incCounter, observeHistogram, recordFallback, recordRequest, renderMetrics } from "./metrics.js";
+import { incCounter, observeHistogram, recordFallback, recordRequest, renderMetrics, recordStickySessionMode } from "./metrics.js";
 import { CONFIG } from "./config.js";
 import { CodexProxyError, invalidRequestError, mapErrorToHttp } from "./errors.js";
 import { NAME, VERSION } from "./version.js";
@@ -65,7 +66,7 @@ function buildModelList(): ModelListResponse {
 }
 
 export function buildHealthPayload() {
-  return { status: "ok", uptime: Math.floor(process.uptime()), version: VERSION };
+  return { status: "ok", uptime: Math.floor(process.uptime()), version: VERSION, sticky_pool: stickyPoolStats() };
 }
 
 export function buildVersionPayload() {
@@ -149,18 +150,21 @@ export function createRouter(): Router {
 
     const model = resolveModel(body.model);
     const label = canonicalModelLabel(model);
-    const session = resolveSessionRequest(req, CONFIG);
-    if (session.kind === "invalid") {
-      incCounter("codex_proxy_errors_total", { endpoint: "chat_completions", model: label });
-      res.status(400).json(invalidRequestError(session.message, "X-Codex-Proxy-Session"));
-      return;
-    }
 
     const { prompt, imageUrls, options } = chatRequestToOptions(body, {
       timeoutMs: CONFIG.defaultTimeoutMs,
       initTimeoutMs: CONFIG.initTimeoutMs,
       turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
     });
+    const session = resolveSessionOptions(req, CONFIG);
+    if (session.kind === "invalid") {
+      recordStickySessionMode(session.options.mode, "rejected");
+      incCounter("codex_proxy_errors_total", { endpoint: "chat_completions", model: label });
+      res.status(400).json(invalidRequestError(session.message, "X-Codex-Proxy-Session-Key"));
+      return;
+    }
+    recordStickySessionMode(session.options.mode, "accepted");
+    setSessionHeaders(res, session.options);
     res.on("close", () => {
       recordRequest({ endpoint: "chat_completions", model, runtime, status, durationMs: Date.now() - reqStart });
       if (!res.writableEnded) abortController.abort();
@@ -200,7 +204,7 @@ export function createRouter(): Router {
             const chunk = makeChatCompletionChunk(streamId, model, delta);
             safeWrite(chunkToSSE(chunk));
             lastStreamWrite = Date.now();
-          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined, observeNotification, imageUrls);
+          }, false, abortController.signal, session.options, observeNotification, imageUrls);
         } finally {
           if (keepalive) clearInterval(keepalive);
           phaseTracker.detach();
@@ -238,7 +242,7 @@ export function createRouter(): Router {
           undefined,
           true,
           abortController.signal,
-          session.kind === "session" ? session.sessionId : undefined,
+          session.options,
           undefined,
           imageUrls,
         );
@@ -292,18 +296,21 @@ export function createRouter(): Router {
 
     const model = resolveModel(body.model);
     const label = canonicalModelLabel(model);
-    const session = resolveSessionRequest(req, CONFIG);
-    if (session.kind === "invalid") {
-      incCounter("codex_proxy_errors_total", { endpoint: "responses", model: label });
-      res.status(400).json(invalidRequestError(session.message, "X-Codex-Proxy-Session"));
-      return;
-    }
 
     const { prompt, imageUrls, options } = responsesRequestToOptions(body, {
       timeoutMs: CONFIG.defaultTimeoutMs,
       initTimeoutMs: CONFIG.initTimeoutMs,
       turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
     });
+    const session = resolveSessionOptions(req, CONFIG);
+    if (session.kind === "invalid") {
+      recordStickySessionMode(session.options.mode, "rejected");
+      incCounter("codex_proxy_errors_total", { endpoint: "responses", model: label });
+      res.status(400).json(invalidRequestError(session.message, "X-Codex-Proxy-Session-Key"));
+      return;
+    }
+    recordStickySessionMode(session.options.mode, "accepted");
+    setSessionHeaders(res, session.options);
     res.on("close", () => {
       recordRequest({ endpoint: "responses", model, runtime, status, durationMs: Date.now() - reqStart });
       if (!res.writableEnded) abortController.abort();
@@ -375,7 +382,7 @@ export function createRouter(): Router {
           result = await runTurn(prompt, options, runtime, "responses", (delta) => {
             safeWrite(makeResponseTextDeltaEvent(0, 0, delta, { responseId: respId, itemId: outputId }));
             lastStreamWrite = Date.now();
-          }, false, abortController.signal, session.kind === "session" ? session.sessionId : undefined, observeNotification, imageUrls);
+          }, false, abortController.signal, session.options, observeNotification, imageUrls);
         } finally {
           if (keepalive) clearInterval(keepalive);
           phaseTracker.detach();
@@ -437,7 +444,7 @@ export function createRouter(): Router {
           undefined,
           true,
           abortController.signal,
-          session.kind === "session" ? session.sessionId : undefined,
+          session.options,
           undefined,
           imageUrls,
         );
@@ -476,6 +483,27 @@ export function createRouter(): Router {
   return router;
 }
 
+function setSessionHeaders(res: Response, options: ResolvedSessionOptions): void {
+  if (!options.explicit && options.mode === "pool") return;
+  res.setHeader("X-Codex-Proxy-Session-Mode", options.mode);
+  if (options.mode === "sticky" && options.sticky) {
+    res.setHeader("X-Codex-Proxy-Session-Key-Hash", options.sticky.keyHashShort);
+    res.setHeader("X-Codex-Proxy-Session-TTL-Seconds", String(options.sticky.ttlSeconds));
+  }
+}
+
+function toStickyRunOptions(options: ResolvedSessionOptions): StickySessionRunOptions {
+  if (!options.sticky) throw new CodexProxyError("codex", "missing sticky session options");
+  return {
+    rawKey: options.sticky.rawKey,
+    keyHash: options.sticky.keyHash,
+    keyHashShort: options.sticky.keyHashShort,
+    ttlSeconds: options.sticky.ttlSeconds,
+    reset: options.sticky.reset,
+    policy: options.sticky.policy,
+  };
+}
+
 function setUsageHeaders(res: Response, result: TurnResult): void {
   if (!result.usage) return;
   res.setHeader("X-Codex-Proxy-Prompt-Tokens", String(result.usage.inputTokens || 0));
@@ -493,19 +521,20 @@ async function runTurn(
   deltaCallback?: DeltaCallback,
   allowFallback = true,
   signal?: AbortSignal,
-  sessionId?: string,
+  sessionOptions?: ResolvedSessionOptions,
   notificationCallback?: NotificationCallback,
   imageUrls?: string[],
 ): Promise<TurnResult> {
-  if (sessionId) {
-    return runTurnOnce(prompt, options, runtime, deltaCallback, signal, sessionId, notificationCallback, imageUrls);
+  if (sessionOptions?.mode === "sticky" && sessionOptions.sticky) {
+    return runTurnOnce(prompt, options, runtime, deltaCallback, signal, toStickyRunOptions(sessionOptions), notificationCallback, imageUrls);
   }
 
+  const effectiveRuntime: RuntimeMode = sessionOptions?.mode === "stateless" ? "oneshot" : runtime;
   try {
-    return await runTurnOnce(prompt, options, runtime, deltaCallback, signal, undefined, notificationCallback, imageUrls);
+    return await runTurnOnce(prompt, options, effectiveRuntime, deltaCallback, signal, undefined, notificationCallback, imageUrls);
   } catch (err) {
     if (
-      runtime === "pool"
+      effectiveRuntime === "pool"
       && allowFallback
       && CONFIG.fallbackOnPoolFailure
       && isPoolTransportFault(err)
@@ -524,13 +553,13 @@ async function runTurnOnce(
   runtime: RuntimeMode,
   deltaCallback?: DeltaCallback,
   signal?: AbortSignal,
-  sessionId?: string,
+  stickySession?: StickySessionRunOptions,
   notificationCallback?: NotificationCallback,
   imageUrls?: string[],
 ): Promise<TurnResult> {
-  if (sessionId) {
-    const turn = GLOBAL_CODEX_SESSIONS.runTurn(sessionId, prompt, options, deltaCallback, notificationCallback, imageUrls);
-    return await withAbort(turn, signal, () => GLOBAL_CODEX_SESSIONS.abortSession(sessionId, options));
+  if (stickySession) {
+    const turn = GLOBAL_CODEX_SESSIONS.runTurn(stickySession, prompt, options, deltaCallback, notificationCallback, imageUrls);
+    return await withAbort(turn, signal, () => GLOBAL_CODEX_SESSIONS.abortSession(stickySession, options));
   }
 
   if (runtime === "oneshot") {

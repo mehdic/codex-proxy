@@ -4,7 +4,7 @@ Date: 2026-05-01
 
 ## Positioning
 
-`codex-proxy` should be the production-grade OpenAI-compatible gateway for official Codex app-server traffic: strong SDK compatibility, explicit session/thread semantics, sandbox/approval policy, reliable Responses behavior, and clean operational packaging.
+`codex-proxy` should be the production-grade OpenAI-compatible gateway for official Codex app-server traffic: strong SDK compatibility, explicit sticky session/thread semantics, sandbox/approval policy, reliable Responses behavior, and clean operational packaging.
 
 It should stay small enough to trust. The proxy should translate, observe, and enforce policy — not become the tool executor, router, workflow engine, and database all at once. That’s how “small bridge” becomes “haunted bridge with a Kubernetes dependency.”
 
@@ -51,6 +51,24 @@ Acceptance checks:
 
 - SDK fixture test suite passes without needing live Codex.
 - Live `/v1/responses` smoke passes for non-streaming, streaming, and tool-call scenarios.
+
+## Phase 1.5 — generic opt-in sticky sessions
+
+Status: implemented on the sticky-session branch.
+
+Deliverables:
+
+- Preferred `X-Codex-Proxy-Session-Key` plus legacy `X-Codex-Proxy-Session` compatibility.
+- `pool | sticky | stateless` mode parsing from headers or `codex_proxy` body extension.
+- Per-request TTL/reset/policy fields, server-side TTL clamps, absolute TTL, max-session bounds, and queue timeout.
+- Hashed-key observability, sticky metrics, health payload stats, and OpenAI-style validation errors.
+- Default behavior remains normal pooled-worker/fresh-thread OpenAI-compatible requests.
+
+Acceptance checks:
+
+- `npm run build`
+- `npm test`
+- live sticky smoke with same-key nonce recall when safe.
 
 ## Phase 2 — minimal durable response/thread state
 

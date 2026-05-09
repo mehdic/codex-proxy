@@ -95,3 +95,22 @@ curl -s -X POST http://127.0.0.1:3466/v1/chat/completions \
 ```
 
 If live turns fail but `/health` works, verify `codex exec "Reply OK only."` in the same user account that runs the proxy.
+
+## Sticky session routing
+
+OpenClaw can opt into Codex thread continuity when the proxy is started with `CODEX_PROXY_STICKY_SESSIONS=1` and requests include `X-Codex-Proxy-Session-Key` or a `codex_proxy.session_key` body extension.
+
+Use a key that scopes at least to agent + source conversation/session + model policy. Do not key only by agent if the same agent serves multiple chats. Example header:
+
+```text
+X-Codex-Proxy-Session-Key: reaper:telegram:5216159759
+X-Codex-Proxy-Session-Mode: sticky
+```
+
+The proxy hashes the raw key for diagnostics and metrics, reuses one `codex app-server` worker/thread for compatible turns, and evicts on TTL/LRU/reset/client-disconnect/failure. Long sticky TTL means local app-server/thread continuity; it does not promise remote server-side prompt-cache warmth.
+
+For one request that must avoid sticky or pool reuse, send:
+
+```text
+X-Codex-Proxy-Session-Mode: stateless
+```

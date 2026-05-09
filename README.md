@@ -28,7 +28,7 @@ v0.4.8 local proxy. Working locally with:
 - `/v1/models`, `/health`, `/healthz/deep`, `/version`, `/metrics`, `/pricing`
 - app-server stdio transport over the official `codex app-server`
 - pooled persistent `codex app-server` workers with one ephemeral thread per request by default
-- opt-in, TTL/LRU-limited Codex session/thread pooling via `CODEX_PROXY_SESSIONS=1` and `X-Codex-Proxy-Session`
+- opt-in, TTL/LRU-limited sticky Codex session/thread pooling via `CODEX_PROXY_STICKY_SESSIONS=1` + `X-Codex-Proxy-Session-Key` or legacy `CODEX_PROXY_SESSIONS=1` + `X-Codex-Proxy-Session`
 - one-shot fallback mode for eligible pool transport failures before response bytes are committed
 - SSE keepalive comments plus writable-guard hardening for streaming clients and early disconnects
 - env-gated localhost CORS
@@ -101,24 +101,53 @@ Pool controls:
 - `CODEX_PROXY_INIT_POOL=0`: disables startup prewarm.
 - `CODEX_PROXY_FALLBACK_ON_POOL_FAILURE=0`: disables retrying eligible pool transport failures with one-shot before any HTTP response is committed.
 
-## Opt-in sessions
+## Opt-in sticky sessions
 
-Default behavior is stateless at the Codex thread layer. A client gets Codex thread reuse only when both conditions are true:
+Default behavior is stateless at the Codex thread layer: pooled workers are reused, but every normal request starts a fresh ephemeral Codex thread. A caller gets Codex thread continuity only by opting in.
 
-1. The server is started with `CODEX_PROXY_SESSIONS=1`.
-2. The request includes `X-Codex-Proxy-Session: <id>`.
+Preferred protocol:
 
-Session ids must match `[A-Za-z0-9._:-]` and be at most 128 characters. Invalid explicit session headers return a 400 OpenAI-style `invalid_request_error`.
+1. Start with `CODEX_PROXY_STICKY_SESSIONS=1`.
+2. Send `X-Codex-Proxy-Session-Key: <stable-key>`.
 
-When enabled and requested, the proxy keeps one initialized `codex app-server --listen stdio://` worker and one Codex thread for sequential requests with the same session id, model, cwd hash, and instruction/config fingerprint. Concurrent requests for the same session are serialized. Sessions are evicted by TTL and LRU, and their app-server worker is killed on eviction, client abort, or turn failure. Session requests do not fallback to another worker because that would break thread continuity.
+Legacy protocol remains supported: `CODEX_PROXY_SESSIONS=1` plus `X-Codex-Proxy-Session: <id>`.
 
-Session controls:
+Optional request controls:
 
-- `CODEX_PROXY_SESSIONS=1`: enables explicit session pooling. Default `0`.
-- `CODEX_PROXY_SESSION_TTL_MS` default `600000`: idle session TTL.
-- `CODEX_PROXY_SESSION_MAX` default `32`: maximum active session/thread workers.
+- `X-Codex-Proxy-Session-Mode: pool|sticky|stateless` — key without a mode defaults to `sticky`; `stateless` forces one-shot for that request.
+- `X-Codex-Proxy-Session-TTL-Seconds: <seconds>` — requested idle TTL, clamped by server config.
+- `X-Codex-Proxy-Session-Reset: 1` — evicts the matching idle sticky session before serving the request.
+- `X-Codex-Proxy-Session-Policy: strict|compatible` — reserved compatibility policy, default `strict`.
 
-Session ids are never used as metric labels. Prompts, raw instructions, and raw cwd values are not used in logs, metrics labels, or pool/session keys.
+Chat Completions and Responses also accept a body extension:
+
+```json
+{
+  "codex_proxy": {
+    "session_key": "app:user:conversation",
+    "session_mode": "sticky",
+    "session_ttl_seconds": 86400,
+    "session_reset": false,
+    "session_policy": "strict"
+  }
+}
+```
+
+When enabled and requested, the proxy keeps one initialized `codex app-server --listen stdio://` worker and one Codex thread for sequential requests with the same hashed session key and compatible model/cwd/instruction/config/sandbox/approval fingerprint. Concurrent requests for the same session are serialized. Sessions are evicted by idle TTL, absolute TTL, LRU, reset, client abort, dead worker, or turn failure. Sticky requests do not fallback to another worker because that would break thread continuity.
+
+Sticky controls:
+
+- `CODEX_PROXY_STICKY_SESSIONS=1`: enables the preferred sticky protocol. `CODEX_PROXY_SESSIONS=1` is still accepted as a legacy enable flag.
+- `CODEX_PROXY_STICKY_DEFAULT_TTL_SECONDS` default derives from `CODEX_PROXY_SESSION_TTL_MS` (`600`).
+- `CODEX_PROXY_STICKY_MIN_TTL_SECONDS` default `60`.
+- `CODEX_PROXY_STICKY_MAX_TTL_SECONDS` default `86400`.
+- `CODEX_PROXY_STICKY_ABSOLUTE_TTL_SECONDS` default `86400`, `0` disables absolute expiry.
+- `CODEX_PROXY_STICKY_MAX_SESSIONS` default derives from `CODEX_PROXY_SESSION_MAX` (`32`).
+- `CODEX_PROXY_STICKY_QUEUE_TIMEOUT_MS` default `120000`.
+- `CODEX_PROXY_STICKY_ALLOW_BODY_OPTIONS` default enabled; set `0` to ignore `codex_proxy` body fields.
+- `CODEX_PROXY_STICKY_KEY_MAX_LENGTH` default `256`.
+
+Raw session keys are hashed before use in diagnostics and are never used as metric labels. Long TTL preserves local Codex app-server/thread continuity only; it is not a guarantee of remote server-side cache warmth.
 
 ### Streaming keepalives and visible progress
 
@@ -224,9 +253,18 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 | `CODEX_PROXY_INIT_POOL` | enabled | Set `0` to disable startup prewarm |
 | `CODEX_PROXY_FALLBACK_ON_POOL_FAILURE` | enabled | Set `0` to disable pool-to-oneshot retry before response commit |
 | `CODEX_PROXY_KEEPALIVE_MS` | `10000` | SSE comment keepalive interval; `0` disables |
-| `CODEX_PROXY_SESSIONS` | `0` | Set `1` to enable explicit `X-Codex-Proxy-Session` thread reuse |
-| `CODEX_PROXY_SESSION_TTL_MS` | `600000` | Idle opt-in session TTL |
-| `CODEX_PROXY_SESSION_MAX` | `32` | Maximum active opt-in sessions |
+| `CODEX_PROXY_SESSIONS` | `0` | Legacy enable flag for `X-Codex-Proxy-Session` sticky thread reuse |
+| `CODEX_PROXY_SESSION_TTL_MS` | `600000` | Legacy idle opt-in session TTL fallback |
+| `CODEX_PROXY_SESSION_MAX` | `32` | Legacy maximum active opt-in sessions fallback |
+| `CODEX_PROXY_STICKY_SESSIONS` | `0` | Preferred enable flag for sticky sessions |
+| `CODEX_PROXY_STICKY_DEFAULT_TTL_SECONDS` | `600` | Default sticky idle TTL, derived from `CODEX_PROXY_SESSION_TTL_MS` if unset |
+| `CODEX_PROXY_STICKY_MIN_TTL_SECONDS` | `60` | Minimum requested sticky TTL |
+| `CODEX_PROXY_STICKY_MAX_TTL_SECONDS` | `86400` | Maximum requested sticky TTL |
+| `CODEX_PROXY_STICKY_ABSOLUTE_TTL_SECONDS` | `86400` | Hard max sticky lifetime; `0` disables absolute expiry |
+| `CODEX_PROXY_STICKY_MAX_SESSIONS` | `32` | Maximum active sticky sessions, derived from `CODEX_PROXY_SESSION_MAX` if unset |
+| `CODEX_PROXY_STICKY_QUEUE_TIMEOUT_MS` | `120000` | Maximum wait behind an active turn on the same sticky session |
+| `CODEX_PROXY_STICKY_ALLOW_BODY_OPTIONS` | enabled | Set `0` to ignore `codex_proxy` body extension fields |
+| `CODEX_PROXY_STICKY_KEY_MAX_LENGTH` | `256` | Maximum preferred sticky session key length |
 | `CODEX_PROXY_CODEX_BIN` | `codex` | Codex binary path |
 | `CODEX_PROXY_HEALTH_MODEL` | default model | Model for `/healthz/deep` |
 | `CODEX_PROXY_HEALTH_TIMEOUT_MS` | `30000` | Deep health timeout |
@@ -278,7 +316,7 @@ That affects Codex-native tool execution inside the Codex app-server session. It
 - Binds to localhost by default.
 - Does **not** read, store, print, or copy Codex OAuth tokens.
 - Delegates auth/session refresh to the official Codex CLI/app-server.
-- Uses a fresh ephemeral Codex thread per request unless `CODEX_PROXY_SESSIONS=1` and a valid `X-Codex-Proxy-Session` header is present.
+- Uses a fresh ephemeral Codex thread per request unless sticky sessions are explicitly enabled and requested with `X-Codex-Proxy-Session-Key` or legacy `X-Codex-Proxy-Session`.
 - Requests default to conservative app-server parameters (`approvalPolicy: never`, `sandbox: read-only`) where supported. These are configurable via `CODEX_PROXY_APPROVAL_POLICY` and `CODEX_PROXY_SANDBOX` for trusted deployments that need more capability.
 
 Important caveat: Codex is an agent, not merely a text model. Keep this service private and localhost-only unless you add your own authentication, authorization, and sandbox policy review.
@@ -312,9 +350,9 @@ This composable design ensures OpenClaw-dispatched tools and Codex-native capabi
 
 The complete project plan lives in [`docs/OCTO_FEATURE_PLAN.md`](docs/OCTO_FEATURE_PLAN.md).
 
-Implemented through v0.4.8:
+Implemented through v0.4.8 plus the sticky-session implementation branch:
 
-- pooled/oneshot runtimes, opt-in sessions, pricing/usage reporting, release checklist, LaunchAgent support, and local soak harness
+- pooled/oneshot runtimes, opt-in sticky sessions, pricing/usage reporting, release checklist, LaunchAgent support, and local soak harness
 - configurable Codex sandbox/approval policy for trusted localhost deployments
 - composable external-tool bridge with multiple `tool_calls` in one assistant turn
 - practical Responses compatibility for string/message inputs, mixed content markers, function-call context, reasoning/summary/item references, metadata echoes, and streaming aliases

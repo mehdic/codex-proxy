@@ -96,3 +96,25 @@ The plist routes logs to `~/.openclaw/logs/`:
 - `/health` is cheap. `/healthz/deep` starts Codex and runs a tiny turn, so use it for manual readiness checks rather than high-frequency polling.
 - The plist uses the nvm-managed Node path by convention. If you use a different Node installation, update `ProgramArguments` accordingly.
 - The pricing refresh script fetches public pricing into the local cache and restarts whichever known Codex Proxy LaunchAgent label is loaded (`com.mehdic.codex-proxy` or Mehdi's existing `fr.chaouachi.tradingagents.codex-proxy`).
+
+## Optional sticky sessions
+
+To enable the preferred sticky-session protocol from LaunchAgent, add:
+
+```xml
+<key>CODEX_PROXY_STICKY_SESSIONS</key>
+<string>1</string>
+```
+
+Optional bounds:
+
+```xml
+<key>CODEX_PROXY_STICKY_MAX_SESSIONS</key>
+<string>32</string>
+<key>CODEX_PROXY_STICKY_DEFAULT_TTL_SECONDS</key>
+<string>600</string>
+<key>CODEX_PROXY_STICKY_MAX_TTL_SECONDS</key>
+<string>86400</string>
+```
+
+Legacy `CODEX_PROXY_SESSIONS=1` and `X-Codex-Proxy-Session` still work, but new clients should prefer `X-Codex-Proxy-Session-Key` or the `codex_proxy.session_key` body extension. Keep the proxy localhost-only unless you add external auth and rate limits.

@@ -25,7 +25,9 @@ Then it sends Codex app-server JSON-RPC:
 
 In `pool` runtime, `initialize` and `initialized` happen once per app-server worker. `thread/start` and `turn/start` still happen per request with `ephemeral: true`.
 
-In opt-in session mode (`CODEX_PROXY_SESSIONS=1` and a valid `X-Codex-Proxy-Session` header), `initialize`, `initialized`, and `thread/start` happen once per session key. Later sequential requests for that same sanitized session id, model, cwd hash, and instruction/config fingerprint call `turn/start` on the stored thread id. Session workers are killed on TTL/LRU eviction, abort, or failure.
+In opt-in sticky mode (`CODEX_PROXY_STICKY_SESSIONS=1` and a valid `X-Codex-Proxy-Session-Key` header, or legacy `CODEX_PROXY_SESSIONS=1` plus `X-Codex-Proxy-Session`), `initialize`, `initialized`, and `thread/start` happen once per sticky session key/fingerprint. Later sequential requests for that same hashed session key, model, cwd hash, instruction/config fingerprint, sandbox, approval policy, and session policy call `turn/start` on the stored thread id. Session workers are killed on idle TTL, absolute TTL, LRU eviction, reset, abort, dead worker, or turn failure.
+
+Session controls can be sent as headers (`X-Codex-Proxy-Session-Mode: pool|sticky|stateless`, `X-Codex-Proxy-Session-TTL-Seconds`, `X-Codex-Proxy-Session-Reset`, `X-Codex-Proxy-Session-Policy`) or as a `codex_proxy` body extension with matching snake/camel-case aliases. `stateless` forces one-shot for a request. Raw session keys are hashed for diagnostics and are never used as metric labels.
 
 Deltas from `item/agentMessage/delta` become OpenAI streaming chunks:
 

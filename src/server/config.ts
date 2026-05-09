@@ -20,6 +20,15 @@ export interface ProxyConfig {
   sessionsEnabled: boolean;
   sessionTtlMs: number;
   sessionMax: number;
+  stickySessionsEnabled: boolean;
+  stickyAllowBodyOptions: boolean;
+  stickyKeyMaxLength: number;
+  stickyDefaultTtlSeconds: number;
+  stickyMinTtlSeconds: number;
+  stickyMaxTtlSeconds: number;
+  stickyAbsoluteTtlSeconds: number;
+  stickyMaxSessions: number;
+  stickyQueueTimeoutMs: number;
   debug: boolean;
   stderrMaxBytes: number;
   cors: boolean;
@@ -53,6 +62,18 @@ export function parseConfig(env: Env = process.env): ProxyConfig {
     sessionsEnabled: env.CODEX_PROXY_SESSIONS === "1",
     sessionTtlMs: parsePositiveInt(env.CODEX_PROXY_SESSION_TTL_MS, 600_000),
     sessionMax: parsePositiveInt(env.CODEX_PROXY_SESSION_MAX, 32),
+    stickySessionsEnabled: env.CODEX_PROXY_STICKY_SESSIONS === "1" || env.CODEX_PROXY_SESSIONS === "1",
+    stickyAllowBodyOptions: env.CODEX_PROXY_STICKY_ALLOW_BODY_OPTIONS !== "0",
+    stickyKeyMaxLength: parsePositiveInt(env.CODEX_PROXY_STICKY_KEY_MAX_LENGTH, 256),
+    stickyDefaultTtlSeconds: parsePositiveInt(
+      env.CODEX_PROXY_STICKY_DEFAULT_TTL_SECONDS,
+      Math.floor(parsePositiveInt(env.CODEX_PROXY_SESSION_TTL_MS, 600_000) / 1000),
+    ),
+    stickyMinTtlSeconds: parsePositiveInt(env.CODEX_PROXY_STICKY_MIN_TTL_SECONDS, 60),
+    stickyMaxTtlSeconds: parsePositiveInt(env.CODEX_PROXY_STICKY_MAX_TTL_SECONDS, 86_400),
+    stickyAbsoluteTtlSeconds: parseNonNegativeInt(env.CODEX_PROXY_STICKY_ABSOLUTE_TTL_SECONDS, 86_400),
+    stickyMaxSessions: parsePositiveInt(env.CODEX_PROXY_STICKY_MAX_SESSIONS, parsePositiveInt(env.CODEX_PROXY_SESSION_MAX, 32)),
+    stickyQueueTimeoutMs: parsePositiveInt(env.CODEX_PROXY_STICKY_QUEUE_TIMEOUT_MS, 120_000),
     debug: env.CODEX_PROXY_DEBUG === "1" || env.DEBUG === "1" || env.DEBUG === "true",
     stderrMaxBytes: parsePositiveInt(env.CODEX_PROXY_STDERR_MAX_BYTES, 16_384),
     cors: env.CODEX_PROXY_CORS === "1",

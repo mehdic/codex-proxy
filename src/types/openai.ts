@@ -4,6 +4,27 @@
 
 // ── Chat Completions ────────────────────────────────────────────────
 
+export type CodexProxySessionMode = "pool" | "sticky" | "stateless";
+export type CodexProxySessionPolicy = "strict" | "compatible";
+
+export interface CodexProxyRequestExtension {
+  session?: string;
+  sessionKey?: string;
+  session_key?: string;
+  mode?: CodexProxySessionMode;
+  sessionMode?: CodexProxySessionMode;
+  session_mode?: CodexProxySessionMode;
+  ttl_seconds?: number | string;
+  sessionTtlSeconds?: number | string;
+  session_ttl_seconds?: number | string;
+  reset?: boolean | string | number;
+  sessionReset?: boolean | string | number;
+  session_reset?: boolean | string | number;
+  policy?: CodexProxySessionPolicy;
+  sessionPolicy?: CodexProxySessionPolicy;
+  session_policy?: CodexProxySessionPolicy;
+}
+
 export interface ChatCompletionRequest {
   model?: string;
   messages: ChatMessage[];
@@ -17,6 +38,7 @@ export interface ChatCompletionRequest {
   tools?: ChatCompletionTool[];
   tool_choice?: "none" | "auto" | "required" | ChatCompletionNamedToolChoice;
   response_format?: ResponseFormat;
+  codex_proxy?: CodexProxyRequestExtension;
 }
 
 export interface ChatCompletionTool {
@@ -159,6 +181,7 @@ export interface ResponseRequest {
   previous_response_id?: string;
   /** Optional: arbitrary key-value metadata echoed back in the response. */
   metadata?: Record<string, string> | null;
+  codex_proxy?: CodexProxyRequestExtension;
 }
 
 export type ResponseInputItem =
