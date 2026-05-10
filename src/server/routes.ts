@@ -48,6 +48,7 @@ import { pricingSnapshot } from "./pricing.js";
 import type { ChatCompletionRequest, ResponseRequest, ModelObject, ModelListResponse } from "../types/openai.js";
 import { attachPhaseTracker } from "./phase-tracker.js";
 import { createProgressChunk, hasRenderableAssistantContent } from "./progress-utils.js";
+import { trace, traceError } from "./trace.js";
 
 type EndpointName = "chat_completions" | "responses";
 
@@ -140,8 +141,10 @@ export function createRouter(): Router {
     const body = req.body as ChatCompletionRequest;
     const reqStart = Date.now();
     const requestId = String(res.locals.requestId || uuid());
+    trace("route.chat_completions.enter", { requestId, body, headers: req.headers });
     let status: "ok" | "error" = "error";
     const runtime = resolveRuntime(req, CONFIG);
+    trace("route.chat_completions.runtime", { requestId, runtime, configuredRuntime: CONFIG.runtime, allowRuntimeOverride: CONFIG.allowRuntimeOverride });
     const abortController = new AbortController();
     if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
       res.status(400).json(invalidRequestError("messages array is required", "messages"));
@@ -150,13 +153,16 @@ export function createRouter(): Router {
 
     const model = resolveModel(body.model);
     const label = canonicalModelLabel(model);
+    trace("route.chat_completions.model", { requestId, requestedModel: body.model, resolvedModel: model, label });
 
     const { prompt, imageUrls, options } = chatRequestToOptions(body, {
       timeoutMs: CONFIG.defaultTimeoutMs,
       initTimeoutMs: CONFIG.initTimeoutMs,
       turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
     });
+    trace("route.chat_completions.options", { requestId, prompt, imageUrls, options, stream: body.stream });
     const session = resolveSessionOptions(req, CONFIG);
+    trace("route.chat_completions.session", { requestId, session });
     if (session.kind === "invalid") {
       recordStickySessionMode(session.options.mode, "rejected");
       incCounter("codex_proxy_errors_total", { endpoint: "chat_completions", model: label });
@@ -166,12 +172,14 @@ export function createRouter(): Router {
     recordStickySessionMode(session.options.mode, "accepted");
     setSessionHeaders(res, session.options);
     res.on("close", () => {
+      trace("route.chat_completions.close", { requestId, status, writableEnded: res.writableEnded, durationMs: Date.now() - reqStart });
       recordRequest({ endpoint: "chat_completions", model, runtime, status, durationMs: Date.now() - reqStart });
       if (!res.writableEnded) abortController.abort();
     });
 
     try {
       if (body.stream) {
+        trace("route.chat_completions.stream.start", { requestId, model, runtime, session: session.options });
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
@@ -210,6 +218,7 @@ export function createRouter(): Router {
           phaseTracker.detach();
         }
         status = "ok";
+        trace("route.chat_completions.stream.result", { requestId, result });
         annotateTurnUsage(result, prompt, model);
 
         const proxyToolCalls = emulateTools ? extractAllProxyToolCalls(result.text, body) : [];
@@ -246,6 +255,7 @@ export function createRouter(): Router {
           undefined,
           imageUrls,
         );
+        trace("route.chat_completions.result", { requestId, result });
         annotateTurnUsage(result, prompt, model);
         const requestedTool = requestedFunctionTool(body);
         const proxyToolCalls = extractAllProxyToolCalls(result.text, body);
@@ -257,6 +267,7 @@ export function createRouter(): Router {
               ? turnResultToToolCallChatCompletion(result, model, requestedTool.function.name)
               : turnResultToChatCompletion(result, model);
         status = "ok";
+        trace("route.chat_completions.response", { requestId, requestedTool, proxyToolCalls, response });
         setUsageHeaders(res, result);
         res.json(response);
 
@@ -265,9 +276,11 @@ export function createRouter(): Router {
         }
       }
     } catch (err) {
+      traceError("route.chat_completions.error", err, { requestId, model, runtime, status });
       incCounter("codex_proxy_errors_total", { endpoint: "chat_completions", model: label });
       if (err instanceof CodexProxyError && err.kind === "client_closed") return;
       const mapped = mapErrorToHttp(err, CONFIG.debug);
+      trace("route.chat_completions.error_mapped", { requestId, mapped, headersSent: res.headersSent, writableEnded: res.writableEnded });
       if (!res.headersSent) {
         res.status(mapped.status).json(mapped.body);
       } else if (!res.writableEnded && res.writable) {
@@ -286,8 +299,10 @@ export function createRouter(): Router {
     const body = req.body as ResponseRequest;
     const reqStart = Date.now();
     const requestId = String(res.locals.requestId || uuid());
+    trace("route.responses.enter", { requestId, body, headers: req.headers });
     let status: "ok" | "error" = "error";
     const runtime = resolveRuntime(req, CONFIG);
+    trace("route.responses.runtime", { requestId, runtime, configuredRuntime: CONFIG.runtime, allowRuntimeOverride: CONFIG.allowRuntimeOverride });
     const abortController = new AbortController();
     if (!body.input) {
       res.status(400).json(invalidRequestError("input is required", "input"));
@@ -296,13 +311,16 @@ export function createRouter(): Router {
 
     const model = resolveModel(body.model);
     const label = canonicalModelLabel(model);
+    trace("route.responses.model", { requestId, requestedModel: body.model, resolvedModel: model, label });
 
     const { prompt, imageUrls, options } = responsesRequestToOptions(body, {
       timeoutMs: CONFIG.defaultTimeoutMs,
       initTimeoutMs: CONFIG.initTimeoutMs,
       turnStartTimeoutMs: CONFIG.turnStartTimeoutMs,
     });
+    trace("route.responses.options", { requestId, prompt, imageUrls, options, stream: body.stream });
     const session = resolveSessionOptions(req, CONFIG);
+    trace("route.responses.session", { requestId, session });
     if (session.kind === "invalid") {
       recordStickySessionMode(session.options.mode, "rejected");
       incCounter("codex_proxy_errors_total", { endpoint: "responses", model: label });
@@ -312,12 +330,14 @@ export function createRouter(): Router {
     recordStickySessionMode(session.options.mode, "accepted");
     setSessionHeaders(res, session.options);
     res.on("close", () => {
+      trace("route.responses.close", { requestId, status, writableEnded: res.writableEnded, durationMs: Date.now() - reqStart });
       recordRequest({ endpoint: "responses", model, runtime, status, durationMs: Date.now() - reqStart });
       if (!res.writableEnded) abortController.abort();
     });
 
     try {
       if (body.stream) {
+        trace("route.responses.stream.start", { requestId, model, runtime, session: session.options });
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
@@ -388,6 +408,7 @@ export function createRouter(): Router {
           phaseTracker.detach();
         }
         status = "ok";
+        trace("route.responses.stream.result", { requestId, result });
         annotateTurnUsage(result, prompt, model);
 
         // output_text.done
@@ -448,6 +469,7 @@ export function createRouter(): Router {
           undefined,
           imageUrls,
         );
+        trace("route.responses.result", { requestId, result });
         annotateTurnUsage(result, prompt, model);
         const response = turnResultToResponseObject(result, model, {
           instructions: body.instructions ?? null,
@@ -457,6 +479,7 @@ export function createRouter(): Router {
           topP: body.top_p ?? null,
         });
         status = "ok";
+        trace("route.responses.response", { requestId, response });
         setUsageHeaders(res, result);
         res.json(response);
 
@@ -465,9 +488,11 @@ export function createRouter(): Router {
         }
       }
     } catch (err) {
+      traceError("route.responses.error", err, { requestId, model, runtime, status });
       incCounter("codex_proxy_errors_total", { endpoint: "responses", model: label });
       if (err instanceof CodexProxyError && err.kind === "client_closed") return;
       const mapped = mapErrorToHttp(err, CONFIG.debug);
+      trace("route.responses.error_mapped", { requestId, mapped, headersSent: res.headersSent, writableEnded: res.writableEnded });
       if (!res.headersSent) {
         res.status(mapped.status).json(mapped.body);
       } else if (!res.writableEnded && res.writable) {
@@ -525,13 +550,18 @@ async function runTurn(
   notificationCallback?: NotificationCallback,
   imageUrls?: string[],
 ): Promise<TurnResult> {
+  trace("run_turn.enter", { endpoint, runtime, allowFallback, sessionOptions, options, prompt, imageUrls, streaming: Boolean(deltaCallback), signalAborted: signal?.aborted });
   if (sessionOptions?.mode === "sticky" && sessionOptions.sticky) {
+    trace("run_turn.decision", { endpoint, decision: "sticky", runtime, sticky: sessionOptions.sticky });
     return runTurnOnce(prompt, options, runtime, deltaCallback, signal, toStickyRunOptions(sessionOptions), notificationCallback, imageUrls);
   }
 
   const effectiveRuntime: RuntimeMode = sessionOptions?.mode === "stateless" ? "oneshot" : runtime;
+  trace("run_turn.decision", { endpoint, decision: "effective_runtime", requestedRuntime: runtime, effectiveRuntime, sessionMode: sessionOptions?.mode });
   try {
-    return await runTurnOnce(prompt, options, effectiveRuntime, deltaCallback, signal, undefined, notificationCallback, imageUrls);
+    const result = await runTurnOnce(prompt, options, effectiveRuntime, deltaCallback, signal, undefined, notificationCallback, imageUrls);
+    trace("run_turn.result", { endpoint, effectiveRuntime, result });
+    return result;
   } catch (err) {
     if (
       effectiveRuntime === "pool"
@@ -539,10 +569,14 @@ async function runTurn(
       && CONFIG.fallbackOnPoolFailure
       && isPoolTransportFault(err)
     ) {
+      traceError("run_turn.pool_failure_fallback", err, { endpoint, options, effectiveRuntime });
       recordFallback("pool_failure");
       incCounter("codex_proxy_errors_total", { endpoint, model: options.model, runtime: "pool" });
-      return runTurnOnce(prompt, options, "oneshot", deltaCallback, signal, undefined, notificationCallback, imageUrls);
+      const fallbackResult = await runTurnOnce(prompt, options, "oneshot", deltaCallback, signal, undefined, notificationCallback, imageUrls);
+      trace("run_turn.fallback_result", { endpoint, fallbackRuntime: "oneshot", result: fallbackResult });
+      return fallbackResult;
     }
+    traceError("run_turn.error", err, { endpoint, effectiveRuntime, options });
     throw err;
   }
 }
@@ -557,48 +591,71 @@ async function runTurnOnce(
   notificationCallback?: NotificationCallback,
   imageUrls?: string[],
 ): Promise<TurnResult> {
+  trace("run_turn_once.enter", { runtime, stickySession, options, prompt, imageUrls, streaming: Boolean(deltaCallback), signalAborted: signal?.aborted });
   if (stickySession) {
+    trace("run_turn_once.sticky.dispatch", { stickySession, options });
     const turn = GLOBAL_CODEX_SESSIONS.runTurn(stickySession, prompt, options, deltaCallback, notificationCallback, imageUrls);
-    return await withAbort(turn, signal, () => GLOBAL_CODEX_SESSIONS.abortSession(stickySession, options));
+    return await withAbort(turn, signal, () => {
+      trace("run_turn_once.sticky.abort", { stickySession, options });
+      GLOBAL_CODEX_SESSIONS.abortSession(stickySession, options);
+    });
   }
 
   if (runtime === "oneshot") {
     const subprocess = new CodexSubprocess();
     try {
+      trace("run_turn_once.oneshot.start", { options });
       await subprocess.start(options);
+      trace("run_turn_once.oneshot.started", { options });
       const turn = deltaCallback
         ? subprocess.submitTurnStreaming(prompt, options, deltaCallback, notificationCallback, imageUrls)
         : subprocess.submitTurn(prompt, options, deltaCallback, notificationCallback, imageUrls);
-      return await withAbort(turn, signal, () => subprocess.kill("SIGTERM", "killed"));
+      const result = await withAbort(turn, signal, () => {
+        trace("run_turn_once.oneshot.abort", { options });
+        subprocess.kill("SIGTERM", "killed");
+      });
+      trace("run_turn_once.oneshot.result", { result });
+      return result;
     } finally {
+      trace("run_turn_once.oneshot.finally_kill", { options });
       subprocess.kill();
     }
   }
 
   let lease: PoolLease<CodexSubprocess> | null = null;
   try {
+    trace("run_turn_once.pool.acquire", { options });
     lease = await GLOBAL_CODEX_POOL.acquire(options);
+    trace("run_turn_once.pool.acquired", { lease: { key: lease.key, warm: lease.warm }, options });
     const turn = deltaCallback
       ? lease.worker.submitTurnStreaming(prompt, options, deltaCallback, notificationCallback, imageUrls)
       : lease.worker.submitTurn(prompt, options, deltaCallback, notificationCallback, imageUrls);
-    const result = await withAbort(turn, signal, () => lease?.worker.kill("SIGTERM", "killed"));
+    const result = await withAbort(turn, signal, () => {
+      trace("run_turn_once.pool.abort", { lease: lease ? { key: lease.key, warm: lease.warm } : null });
+      lease?.worker.kill("SIGTERM", "killed");
+    });
+    trace("run_turn_once.pool.result", { lease: { key: lease.key, warm: lease.warm }, result });
     GLOBAL_CODEX_POOL.release(lease, true);
     lease = null;
     return result;
   } catch (err) {
+    traceError("run_turn_once.pool.error", err, { lease: lease ? { key: lease.key, warm: lease.warm } : null, options });
     if (lease) GLOBAL_CODEX_POOL.release(lease, false);
     throw err;
   }
 }
 
 function withAbort<T>(operation: Promise<T>, signal: AbortSignal | undefined, onAbort: () => void): Promise<T> {
+  trace("with_abort.enter", { hasSignal: Boolean(signal), aborted: signal?.aborted });
   if (!signal) return operation;
   if (signal.aborted) {
+    trace("with_abort.already_aborted");
     onAbort();
     return Promise.reject(new CodexProxyError("client_closed", "client_closed"));
   }
   return new Promise<T>((resolve, reject) => {
     const abort = () => {
+      trace("with_abort.abort_event");
       onAbort();
       reject(new CodexProxyError("client_closed", "client_closed"));
     };

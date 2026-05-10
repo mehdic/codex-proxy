@@ -3,6 +3,7 @@ import { CodexSubprocess, type CodexSubprocessOptions, type DeltaCallback, type 
 import { CONFIG } from "../server/config.js";
 import { CodexProxyError } from "../server/errors.js";
 import { recordSessionEvent, recordStickySessionBusy, recordStickySessionEviction, recordStickySessionMode, recordStickySessionStart, recordStickySessionHit, setSessionCount } from "../server/metrics.js";
+import { trace, traceError } from "../server/trace.js";
 
 export interface SessionWorker extends PoolWorker {
   startThread(options: CodexSubprocessOptions, ephemeral?: boolean): Promise<string>;
@@ -110,41 +111,53 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
     notificationCallback?: NotificationCallback,
     imageUrls?: string[],
   ): Promise<TurnResult> {
+    trace("session_pool.run_turn.enter", { session, userText, options, streaming: Boolean(deltaCallback), imageUrls, stats: this.stats() });
     const sticky = typeof session === "string" ? this.parseLegacySession(session) : session;
     const key = typeof session === "string" ? buildSessionKey(sticky.rawKey || session, options) : buildStickySessionKey(sticky, options);
     const ttlMs = typeof session === "string"
       ? this.defaultTtlMs
       : Math.max(1, Math.trunc(sticky.ttlSeconds || this.defaultTtlMs / 1000)) * 1000;
 
+    trace("session_pool.run_turn.resolved", { key, sticky, ttlMs });
     this.evictExpired();
-    if (sticky.reset) this.resetMatching(sticky.keyHash);
+    if (sticky.reset) {
+      trace("session_pool.run_turn.reset_requested", { keyHash: sticky.keyHash });
+      this.resetMatching(sticky.keyHash);
+    }
 
     let slot = this.sessions.get(key);
     if (slot && slot.worker.isDead) {
+      trace("session_pool.run_turn.slot_unhealthy", { key, keyHashShort: slot.keyHashShort });
       this.discard(key, slot, "unhealthy");
       slot = undefined;
     }
 
     if (slot) {
+      trace("session_pool.run_turn.hit", { key, keyHashShort: slot.keyHashShort, turnCount: slot.turnCount });
       recordSessionEvent("hit");
       recordStickySessionHit();
     } else {
+      trace("session_pool.run_turn.miss", { key, sticky });
       recordSessionEvent("miss");
       slot = await this.getOrCreateSlot(key, sticky, ttlMs, options);
     }
     slot.ttlMs = ttlMs;
 
     const run = async () => {
+      trace("session_pool.run_turn.queue_start", { key, threadId: slot.threadId, turnCount: slot.turnCount });
       slot.inFlight = true;
       try {
         const result = await slot.worker.submitTurnOnThread(slot.threadId, userText, options, deltaCallback, notificationCallback, imageUrls);
         slot.lastUsedAt = this.now();
         slot.turnCount++;
+        trace("session_pool.run_turn.queue_result", { key, threadId: slot.threadId, turnCount: slot.turnCount, result });
         return result;
       } catch (err) {
+        traceError("session_pool.run_turn.queue_error", err, { key, threadId: slot.threadId, turnCount: slot.turnCount });
         this.discard(key, slot, "turn_error");
         throw err;
       } finally {
+        trace("session_pool.run_turn.queue_finally", { key, threadId: slot.threadId });
         slot.inFlight = false;
       }
     };
@@ -156,6 +169,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   drain(): void {
+    trace("session_pool.drain", { stats: this.stats(), stickyStats: this.stickyStats() });
     for (const [key, slot] of this.sessions) this.discard(key, slot, "evicted");
     this.publishSize();
   }
@@ -178,6 +192,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   abortSession(session: string | StickySessionRunOptions, options: CodexSubprocessOptions): void {
+    trace("session_pool.abort_session.enter", { session, options });
     const sticky = typeof session === "string" ? this.parseLegacySession(session, false) : session;
     if (!sticky) return;
     const key = typeof session === "string" ? buildSessionKey(sticky.rawKey || session, options) : buildStickySessionKey(sticky, options);
@@ -186,6 +201,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   resetSession(sticky: StickySessionRunOptions): void {
+    trace("session_pool.reset_session", { sticky });
     this.resetMatching(sticky.keyHash);
   }
 
@@ -200,10 +216,12 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   private async getOrCreateSlot(key: string, sticky: StickySessionRunOptions, ttlMs: number, options: CodexSubprocessOptions): Promise<SessionSlot<T>> {
+    trace("session_pool.get_or_create.enter", { key, sticky, ttlMs, options });
     const existing = this.sessions.get(key);
     if (existing) return existing;
     let creation = this.creations.get(key);
     if (!creation) {
+      trace("session_pool.get_or_create.create_new", { key });
       creation = this.createSlot(key, sticky, ttlMs, options);
       this.creations.set(key, creation);
     }
@@ -215,6 +233,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   private async createSlot(key: string, sticky: StickySessionRunOptions, ttlMs: number, options: CodexSubprocessOptions): Promise<SessionSlot<T>> {
+    trace("session_pool.create_slot.enter", { key, sticky, ttlMs, options, stats: this.stats() });
     this.evictForCapacity();
     if (this.sessions.size >= this.max) {
       recordSessionEvent("rejected");
@@ -223,7 +242,9 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
     }
     const worker = this.createWorker();
     try {
+      trace("session_pool.create_slot.worker_start", { key, options });
       await worker.start(options);
+      trace("session_pool.create_slot.thread_start", { key, options });
       const threadId = await worker.startThread(options, true);
       const now = this.now();
       const slot: SessionSlot<T> = {
@@ -240,11 +261,13 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
         turnCount: 0,
       };
       this.sessions.set(key, slot);
+      trace("session_pool.create_slot.created", { key, threadId, keyHashShort: sticky.keyHashShort });
       recordSessionEvent("created");
       recordStickySessionStart();
       this.publishSize();
       return slot;
     } catch (err) {
+      traceError("session_pool.create_slot.error", err, { key, sticky, options });
       worker.kill("SIGTERM", "killed");
       throw err;
     }
@@ -252,6 +275,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
 
   private evictExpired(): void {
     const now = this.now();
+    trace("session_pool.evict_expired.scan", { now, size: this.sessions.size });
     for (const [key, slot] of this.sessions) {
       if (slot.inFlight) continue;
       if (slot.worker.isDead) this.discard(key, slot, "unhealthy");
@@ -261,6 +285,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   private evictForCapacity(): void {
+    trace("session_pool.evict_for_capacity.enter", { size: this.sessions.size, max: this.max });
     while (this.sessions.size >= this.max) {
       const lru = this.findLruEvictable();
       if (!lru) return;
@@ -278,6 +303,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   private resetMatching(sessionKeyHash: string): void {
+    trace("session_pool.reset_matching.enter", { sessionKeyHash, size: this.sessions.size });
     for (const [key, slot] of [...this.sessions]) {
       if (slot.sessionKeyHash !== sessionKeyHash) continue;
       if (slot.inFlight) {
@@ -290,6 +316,7 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   private discard(key: string, slot: SessionSlot<T>, reason: "evicted" | "expired" | "idle_ttl" | "absolute_ttl" | "lru" | "unhealthy" | "reset" | "client_disconnect" | "turn_error"): void {
+    trace("session_pool.discard", { key, reason, slot: { keyHashShort: slot.keyHashShort, threadId: slot.threadId, createdAt: slot.createdAt, lastUsedAt: slot.lastUsedAt, inFlight: slot.inFlight, turnCount: slot.turnCount } });
     if (this.sessions.get(key) !== slot) return;
     this.sessions.delete(key);
     slot.worker.kill("SIGTERM", "killed");
@@ -305,10 +332,12 @@ export class CodexSessionPool<T extends SessionWorker = CodexSubprocess> {
   }
 
   private withQueueTimeout<TValue>(promise: Promise<TValue>): Promise<TValue> {
+    trace("session_pool.with_queue_timeout.enter", { queueTimeoutMs: this.queueTimeoutMs });
     if (!this.queueTimeoutMs) return promise;
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
+        trace("session_pool.queue_timeout", { queueTimeoutMs: this.queueTimeoutMs });
         recordStickySessionBusy("queue_timeout");
         reject(new CodexProxyError("timeout", "sticky session queue timed out"));
       }, this.queueTimeoutMs);

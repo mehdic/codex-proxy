@@ -30,6 +30,7 @@ export interface ProxyConfig {
   stickyMaxSessions: number;
   stickyQueueTimeoutMs: number;
   debug: boolean;
+  trace: boolean;
   stderrMaxBytes: number;
   cors: boolean;
   codexSandbox: "read-only" | "workspace-write" | "danger-full-access";
@@ -75,6 +76,7 @@ export function parseConfig(env: Env = process.env): ProxyConfig {
     stickyMaxSessions: parsePositiveInt(env.CODEX_PROXY_STICKY_MAX_SESSIONS, parsePositiveInt(env.CODEX_PROXY_SESSION_MAX, 32)),
     stickyQueueTimeoutMs: parsePositiveInt(env.CODEX_PROXY_STICKY_QUEUE_TIMEOUT_MS, 120_000),
     debug: env.CODEX_PROXY_DEBUG === "1" || env.DEBUG === "1" || env.DEBUG === "true",
+    trace: env.CODEX_PROXY_TRACE === "1" || env.CODEX_PROXY_TRACE === "true",
     stderrMaxBytes: parsePositiveInt(env.CODEX_PROXY_STDERR_MAX_BYTES, 16_384),
     cors: env.CODEX_PROXY_CORS === "1",
     codexSandbox: parseCodexSandbox(env.CODEX_PROXY_SANDBOX, "read-only"),

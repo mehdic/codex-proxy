@@ -6,6 +6,7 @@ import { createRouter } from "./routes.js";
 import { invalidRequestError } from "./errors.js";
 import { drainGlobalPool, prewarmGlobalPool } from "../subprocess/pool.js";
 import { drainGlobalSessions } from "../subprocess/session-pool.js";
+import { trace, traceError } from "./trace.js";
 
 export interface ServerOptions {
   host?: string;
@@ -39,7 +40,25 @@ export function createApp(options: Pick<ServerOptions, "maxBodySize"> = {}): Exp
     res.locals.requestId = requestId;
     res.setHeader("X-Request-Id", requestId);
     const started = Date.now();
+    trace("http.request.start", {
+      requestId,
+      method: req.method,
+      path: req.path,
+      originalUrl: req.originalUrl,
+      query: req.query,
+      headers: req.headers,
+      ip: req.ip,
+    });
     res.on("finish", () => {
+      trace("http.request.finish", {
+        requestId,
+        method: req.method,
+        path: req.path,
+        originalUrl: req.originalUrl,
+        statusCode: res.statusCode,
+        durationMs: Date.now() - started,
+        responseHeaders: res.getHeaders(),
+      });
       if (CONFIG.debug) {
         console.error(`[codex-proxy] req_id=${requestId} method=${req.method} path=${req.path} status=${res.statusCode} duration_ms=${Date.now() - started}`);
       }
@@ -62,11 +81,16 @@ export async function startServer(options: ServerOptions = {}) {
   const port = options.port ?? cfg.port;
   const app = createApp(options);
 
+  trace("server.start.request", { host, port, options, config: cfg });
   return new Promise<{ app: Express; server: Server; host: string; port: number }>((resolve, reject) => {
     const server = createServer(app);
     serverInstance = server;
-    server.once("error", reject);
+    server.once("error", (err) => {
+      traceError("server.start.error", err, { host, port });
+      reject(err);
+    });
     server.listen(port, host, () => {
+      trace("server.start.listen", { host, port });
       prewarmGlobalPool();
       resolve({ app, server, host, port });
     });
@@ -75,6 +99,7 @@ export async function startServer(options: ServerOptions = {}) {
 
 export async function stopServer(graceMs = CONFIG.shutdownGraceMs): Promise<void> {
   if (!serverInstance) return;
+  trace("server.stop.request", { graceMs });
   const server = serverInstance;
   serverInstance = null;
   drainGlobalPool();
@@ -87,8 +112,13 @@ export async function stopServer(graceMs = CONFIG.shutdownGraceMs): Promise<void
     }, graceMs);
     server.close((err) => {
       clearTimeout(timer);
-      if (err) reject(err);
-      else resolve();
+      if (err) {
+        traceError("server.stop.error", err, { graceMs });
+        reject(err);
+      } else {
+        trace("server.stop.closed", { graceMs });
+        resolve();
+      }
     });
   });
 }

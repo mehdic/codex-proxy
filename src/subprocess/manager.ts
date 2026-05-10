@@ -24,6 +24,7 @@ import { CodexProxyError } from "../server/errors.js";
 import { recordSubprocessExit } from "../server/metrics.js";
 import { VERSION } from "../server/version.js";
 import type { UsageCostEstimate } from "../server/pricing.js";
+import { trace, traceError } from "../server/trace.js";
 import type {
   RequestId,
   InitializeResponse,
@@ -88,12 +89,14 @@ export class CodexSubprocess {
   private dead = false;
   private killTimer: NodeJS.Timeout | null = null;
   private exitReason: "clean" | "signal" | "error" | "timeout" | "killed" | "unknown" = "unknown";
+  private readonly instanceId = uuid();
 
   /**
    * Spawn `codex app-server`, complete the initialize handshake,
    * and send the `initialized` notification.
    */
   async start(options: CodexSubprocessOptions): Promise<InitializeResponse> {
+    trace("subprocess.start.enter", { instanceId: this.instanceId, options });
     const args = ["app-server", "--listen", "stdio://"];
 
     // Apply config overrides
@@ -104,6 +107,7 @@ export class CodexSubprocess {
     }
 
     const codexBin = CONFIG.codexBin;
+    trace("subprocess.start.spawn", { instanceId: this.instanceId, codexBin, args, cwd: options.cwd || process.cwd() });
 
     this.proc = spawn(codexBin, args, {
       cwd: options.cwd || process.cwd(),
@@ -112,12 +116,14 @@ export class CodexSubprocess {
     });
 
     this.proc.stdout!.on("data", (chunk: Buffer) => {
+      trace("subprocess.stdout.data", { instanceId: this.instanceId, bytes: chunk.length, text: chunk.toString("utf-8") });
       this.buffer += chunk.toString("utf-8");
       this.drainBuffer();
     });
 
     this.proc.stderr!.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8");
+      trace("subprocess.stderr.data", { instanceId: this.instanceId, bytes: chunk.length, text });
       // Keep a bounded diagnostic tail. Never emit it unless debug is enabled.
       this.stderrText = (this.stderrText + text).slice(-CONFIG.stderrMaxBytes);
       if (CONFIG.debug) {
@@ -126,6 +132,7 @@ export class CodexSubprocess {
     });
 
     this.proc.on("exit", (code, signal) => {
+      trace("subprocess.exit", { instanceId: this.instanceId, code, signal, exitReason: this.exitReason, pendingCount: this.pendingResolvers.size });
       this.dead = true;
       if (this.killTimer) clearTimeout(this.killTimer);
       if (this.exitReason === "unknown") this.exitReason = signal ? "signal" : code === 0 ? "clean" : "error";
@@ -143,6 +150,7 @@ export class CodexSubprocess {
     });
 
     this.proc.on("error", (err) => {
+      traceError("subprocess.error", err, { instanceId: this.instanceId });
       this.dead = true;
       this.exitReason = "error";
       recordSubprocessExit("error");
@@ -164,6 +172,7 @@ export class CodexSubprocess {
       },
     }, options.initTimeoutMs || CONFIG.initTimeoutMs);
 
+    trace("subprocess.start.initialized", { instanceId: this.instanceId, initResult });
     // Send initialized notification
     this.sendNotification("initialized");
 
@@ -172,6 +181,7 @@ export class CodexSubprocess {
 
   /** Start a Codex thread on this app-server worker. */
   async startThread(options: CodexSubprocessOptions, ephemeral = true): Promise<string> {
+    trace("subprocess.start_thread.enter", { instanceId: this.instanceId, options, ephemeral, dead: this.dead });
     if (this.dead) throw new CodexProxyError("codex", "app-server process is dead", { detail: this.stderr });
 
     const threadResp = await this.sendRequest<ThreadStartResponse>("thread/start", {
@@ -185,6 +195,7 @@ export class CodexSubprocess {
       persistExtendedHistory: false,
     }, options.initTimeoutMs || CONFIG.initTimeoutMs);
 
+    trace("subprocess.start_thread.result", { instanceId: this.instanceId, threadResp });
     return threadResp.thread.id;
   }
 
@@ -201,6 +212,7 @@ export class CodexSubprocess {
     notificationCallback?: NotificationCallback,
     imageUrls?: string[],
   ): Promise<TurnResult> {
+    trace("subprocess.submit_turn_on_thread.enter", { instanceId: this.instanceId, threadId, userText, options, streaming: Boolean(deltaCallback), imageUrls, dead: this.dead });
     if (this.dead) throw new CodexProxyError("codex", "app-server process is dead", { detail: this.stderr });
 
     let tokenUsage: TokenUsageBreakdown | null = null;
@@ -212,6 +224,7 @@ export class CodexSubprocess {
     let handler: (method: string, params: unknown) => void;
     const turnPromise = new Promise<TurnResult>((resolve, reject) => {
       timeout = setTimeout(() => {
+        trace("subprocess.submit_turn.timeout", { instanceId: this.instanceId, threadId, timeoutMs: options.timeoutMs || CONFIG.defaultTimeoutMs, options });
         this.exitReason = "timeout";
         reject(new CodexProxyError("timeout", `Turn timed out after ${options.timeoutMs || CONFIG.defaultTimeoutMs}ms`, {
           detail: this.stderr,
@@ -222,12 +235,14 @@ export class CodexSubprocess {
       handler = (method: string, params: unknown) => {
         const p = params as Record<string, unknown>;
         if (p.threadId !== threadId) return;
+        trace("subprocess.notification.dispatch", { instanceId: this.instanceId, threadId, method, params });
         notificationCallback?.(method, params);
 
         switch (method) {
           case "item/agentMessage/delta": {
             const delta = extractDeltaText(p) || (p as unknown as AgentMessageDeltaNotification).delta;
             assistantText += delta;
+            trace("subprocess.agent_delta", { instanceId: this.instanceId, threadId, delta, assistantTextLength: assistantText.length });
             deltaCallback?.(delta);
             break;
           }
@@ -247,6 +262,7 @@ export class CodexSubprocess {
           case "thread/tokenUsage/updated": {
             const usage = p as unknown as ThreadTokenUsageUpdatedNotification;
             tokenUsage = usage.tokenUsage.last;
+            trace("subprocess.token_usage", { instanceId: this.instanceId, threadId, tokenUsage });
             break;
           }
           case "turn/completed": {
@@ -267,14 +283,16 @@ export class CodexSubprocess {
               }
             }
 
-            resolve({
+            const result = {
               text: assistantText,
               turnId: tc.turn.id,
               threadId,
               usage: tokenUsage,
               durationMs: tc.turn.durationMs,
               finishReason,
-            });
+            } as TurnResult;
+            trace("subprocess.turn_completed", { instanceId: this.instanceId, threadId, turn: tc.turn, result });
+            resolve(result);
             break;
           }
           case "error": {
@@ -318,12 +336,15 @@ export class CodexSubprocess {
     }
 
     try {
-      await this.sendRequest<TurnStartResponse>("turn/start", {
+      trace("subprocess.turn_start.request", { instanceId: this.instanceId, threadId, input, model: options.model, timeoutMs: options.turnStartTimeoutMs || CONFIG.turnStartTimeoutMs });
+      const turnStartResult = await this.sendRequest<TurnStartResponse>("turn/start", {
         threadId,
         input,
         model: options.model,
       }, options.turnStartTimeoutMs || CONFIG.turnStartTimeoutMs);
+      trace("subprocess.turn_start.result", { instanceId: this.instanceId, threadId, turnStartResult });
     } catch (err) {
+      traceError("subprocess.turn_start.error", err, { instanceId: this.instanceId, threadId, options });
       clearTimeout(timeout!);
       this.removeNotificationHandler(handler!);
       this.kill("SIGTERM", "killed");
@@ -331,7 +352,10 @@ export class CodexSubprocess {
       throw err;
     }
 
-    return turnPromise.finally(() => cleanupTempFiles(tempFiles));
+    return turnPromise.finally(() => {
+      trace("subprocess.submit_turn.finally", { instanceId: this.instanceId, threadId, tempFiles });
+      cleanupTempFiles(tempFiles);
+    });
   }
 
   /**
@@ -346,6 +370,7 @@ export class CodexSubprocess {
     notificationCallback?: NotificationCallback,
     imageUrls?: string[],
   ): Promise<TurnResult> {
+    trace("subprocess.submit_turn.enter", { instanceId: this.instanceId, userText, options, streaming: Boolean(deltaCallback), imageUrls });
     const threadId = await this.startThread(options, true);
     return this.submitTurnOnThread(threadId, userText, options, deltaCallback, notificationCallback, imageUrls);
   }
@@ -361,6 +386,7 @@ export class CodexSubprocess {
     notificationCallback?: NotificationCallback,
     imageUrls?: string[],
   ): Promise<TurnResult> {
+    trace("subprocess.submit_turn_streaming.enter", { instanceId: this.instanceId, userText, options, imageUrls });
     return this.submitTurn(userText, options, deltaCallback, notificationCallback, imageUrls);
   }
 
@@ -370,6 +396,7 @@ export class CodexSubprocess {
    * the proxy operates headlessly.
    */
   private handleServerRequest(msg: ServerApprovalRequest): void {
+    trace("subprocess.server_request", { instanceId: this.instanceId, msg });
     // For safety, we auto-approve with the most conservative response.
     // In read-only sandbox mode with approval=never, most requests
     // should not arrive. If they do, deny them.
@@ -388,18 +415,22 @@ export class CodexSubprocess {
   }
 
   private sendRequest<T>(method: string, params: unknown, timeoutMs = CONFIG.initTimeoutMs): Promise<T> {
+    trace("jsonrpc.request.prepare", { instanceId: this.instanceId, method, params, timeoutMs });
     return new Promise((resolve, reject) => {
       const id = this.nextId();
       const timeout = setTimeout(() => {
+        trace("jsonrpc.request.timeout", { instanceId: this.instanceId, id, method, params, timeoutMs });
         this.pendingResolvers.delete(id);
         reject(new CodexProxyError("timeout", `${method} timed out after ${timeoutMs}ms`, { detail: this.stderr }));
       }, timeoutMs);
       this.pendingResolvers.set(id, {
         resolve: (value: unknown) => {
+          trace("jsonrpc.request.resolve", { instanceId: this.instanceId, id, method, value });
           clearTimeout(timeout);
           resolve(value as T);
         },
         reject: (err: Error) => {
+          traceError("jsonrpc.request.reject", err, { instanceId: this.instanceId, id, method });
           clearTimeout(timeout);
           reject(err);
         },
@@ -414,6 +445,7 @@ export class CodexSubprocess {
   }
 
   private sendNotification(method: string, params?: unknown): void {
+    trace("jsonrpc.notification.send", { instanceId: this.instanceId, method, params });
     this.write({
       jsonrpc: "2.0",
       method,
@@ -422,6 +454,7 @@ export class CodexSubprocess {
   }
 
   private write(msg: unknown): void {
+    trace("jsonrpc.write", { instanceId: this.instanceId, dead: this.dead, stdinWritable: this.proc?.stdin?.writable, msg });
     if (this.dead || !this.proc?.stdin?.writable) return;
     const json = JSON.stringify(msg);
     this.proc.stdin.write(json + "\n");
@@ -434,6 +467,7 @@ export class CodexSubprocess {
       this.buffer = this.buffer.slice(newlineIdx + 1);
       if (!line) continue;
 
+      trace("jsonrpc.line.received", { instanceId: this.instanceId, line });
       let msg: JsonRpcMessage;
       try {
         msg = JSON.parse(line);
@@ -449,6 +483,7 @@ export class CodexSubprocess {
   }
 
   private handleMessage(msg: JsonRpcMessage): void {
+    trace("jsonrpc.message.handle", { instanceId: this.instanceId, msg });
     // JSON-RPC response (has id, has result or error)
     if ("id" in msg && ("result" in msg || "error" in msg)) {
       const resolver = this.pendingResolvers.get(msg.id as RequestId);
@@ -483,16 +518,19 @@ export class CodexSubprocess {
   }
 
   private addNotificationHandler(handler: (method: string, params: unknown) => void): void {
+    trace("subprocess.notification_handler.add", { instanceId: this.instanceId, before: this.notificationHandlers.length });
     this.notificationHandlers.push(handler);
   }
 
   private removeNotificationHandler(handler: (method: string, params: unknown) => void): void {
     const idx = this.notificationHandlers.indexOf(handler);
+    trace("subprocess.notification_handler.remove", { instanceId: this.instanceId, idx, before: this.notificationHandlers.length });
     if (idx !== -1) this.notificationHandlers.splice(idx, 1);
   }
 
   /** Kill the subprocess. */
   kill(signal: NodeJS.Signals = "SIGTERM", reason: "killed" | "timeout" = "killed"): void {
+    trace("subprocess.kill", { instanceId: this.instanceId, signal, reason, hasProc: Boolean(this.proc), dead: this.dead });
     if (this.proc && !this.dead) {
       this.dead = true;
       this.exitReason = reason;
