@@ -54,7 +54,7 @@ export function parseConfig(env: Env = process.env): ProxyConfig {
     initTimeoutMs: parsePositiveInt(env.CODEX_PROXY_INIT_TIMEOUT_MS, 10_000),
     healthTimeoutMs: parsePositiveInt(env.CODEX_PROXY_HEALTH_TIMEOUT_MS, 30_000),
     shutdownGraceMs: parsePositiveInt(env.CODEX_PROXY_SHUTDOWN_GRACE_MS, 10_000),
-    poolMax: parsePositiveInt(env.CODEX_PROXY_POOL_MAX, 2),
+    poolMax: parsePositiveInt(env.CODEX_PROXY_POOL_MAX, 32),
     poolTtlMs: parsePositiveInt(env.CODEX_PROXY_POOL_TTL_MS, 600_000),
     prewarmModels: parseCsv(env.CODEX_PROXY_PREWARM_MODELS, ["gpt-5.5", "gpt-5.4-mini"]),
     initPool: env.CODEX_PROXY_INIT_POOL !== "0",

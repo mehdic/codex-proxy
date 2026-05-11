@@ -95,7 +95,7 @@ curl -H 'X-Codex-Proxy-Runtime: oneshot' ...
 
 Pool controls:
 
-- `CODEX_PROXY_POOL_MAX` default `2`: maximum live app-server workers.
+- `CODEX_PROXY_POOL_MAX` default `32`: maximum live app-server workers.
 - `CODEX_PROXY_POOL_TTL_MS` default `600000`: idle worker TTL.
 - `CODEX_PROXY_PREWARM_MODELS` default `gpt-5.5,gpt-5.4-mini`: models to prewarm at startup.
 - `CODEX_PROXY_INIT_POOL=0`: disables startup prewarm.
@@ -247,7 +247,7 @@ More detail: [docs/openclaw.md](docs/openclaw.md).
 | `CODEX_PROXY_DEFAULT_MODEL` | `gpt-5.5` | Default model when client omits one |
 | `CODEX_PROXY_RUNTIME` | `pool` | `pool` or `oneshot` app-server runtime |
 | `CODEX_PROXY_ALLOW_RUNTIME_OVERRIDE` | unset | Set `1` to honor `X-Codex-Proxy-Runtime` |
-| `CODEX_PROXY_POOL_MAX` | `2` | Maximum live pooled app-server workers |
+| `CODEX_PROXY_POOL_MAX` | `32` | Maximum live pooled app-server workers |
 | `CODEX_PROXY_POOL_TTL_MS` | `600000` | Idle worker TTL |
 | `CODEX_PROXY_PREWARM_MODELS` | `gpt-5.5,gpt-5.4-mini` | Comma-separated startup prewarm models |
 | `CODEX_PROXY_INIT_POOL` | enabled | Set `0` to disable startup prewarm |

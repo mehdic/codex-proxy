@@ -19,6 +19,8 @@
   <dict>
     <key>CODEX_PROXY_HOST</key>
     <string>127.0.0.1</string>
+    <key>CODEX_PROXY_POOL_MAX</key>
+    <string>32</string>
     <key>CODEX_PROXY_PORT</key>
     <string>3466</string>
     <key>PATH</key>

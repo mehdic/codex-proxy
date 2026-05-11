@@ -67,7 +67,13 @@ function buildModelList(): ModelListResponse {
 }
 
 export function buildHealthPayload() {
-  return { status: "ok", uptime: Math.floor(process.uptime()), version: VERSION, sticky_pool: stickyPoolStats() };
+  return {
+    status: "ok",
+    uptime: Math.floor(process.uptime()),
+    version: VERSION,
+    pool: GLOBAL_CODEX_POOL.stats(),
+    sticky_pool: stickyPoolStats(),
+  };
 }
 
 export function buildVersionPayload() {

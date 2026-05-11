@@ -10,7 +10,7 @@ test("parseConfig applies safe defaults", () => {
   assert.equal(cfg.shutdownGraceMs, 10_000);
   assert.equal(cfg.runtime, "pool");
   assert.equal(cfg.allowRuntimeOverride, false);
-  assert.equal(cfg.poolMax, 2);
+  assert.equal(cfg.poolMax, 32);
   assert.equal(cfg.poolTtlMs, 600_000);
   assert.deepEqual(cfg.prewarmModels, ["gpt-5.5", "gpt-5.4-mini"]);
   assert.equal(cfg.initPool, true);

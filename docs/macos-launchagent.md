@@ -106,7 +106,14 @@ To enable the preferred sticky-session protocol from LaunchAgent, add:
 <string>1</string>
 ```
 
-Optional bounds:
+Optional pool bounds:
+
+```xml
+<key>CODEX_PROXY_POOL_MAX</key>
+<string>32</string>
+```
+
+Optional sticky-session bounds:
 
 ```xml
 <key>CODEX_PROXY_STICKY_MAX_SESSIONS</key>
