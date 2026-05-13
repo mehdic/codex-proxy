@@ -63,12 +63,12 @@ export function resolveSessionOptions(req: StickyOptionsRequest | undefined, con
   const explicit = Boolean(keyWasProvided || rawMode !== undefined || rawTtl !== undefined || rawReset !== undefined || rawPolicy !== undefined);
   if (mode !== "sticky") return ok({ mode, explicit });
 
+  if (!config.stickySessionsEnabled) {
+    return ok({ mode: "pool", explicit: false });
+  }
+
   const key = normalizeSessionKey(rawKey, legacyHeader ? Math.min(config.stickyKeyMaxLength, 128) : config.stickyKeyMaxLength);
   if (!key) return invalid("invalid_session_key", `X-Codex-Proxy-Session-Key must be a non-empty string up to ${config.stickyKeyMaxLength} characters`);
-
-  if (!config.stickySessionsEnabled) {
-    return invalid("sticky_sessions_disabled", "Sticky sessions are disabled. Set CODEX_PROXY_STICKY_SESSIONS=1 to enable this opt-in extension.");
-  }
 
   const ttlRaw = rawTtl === undefined || rawTtl === null || String(rawTtl).trim() === "" ? config.stickyDefaultTtlSeconds : Number.parseInt(String(rawTtl), 10);
   if (!Number.isFinite(ttlRaw) || ttlRaw <= 0) return invalid("invalid_session_ttl", "Session TTL must be a positive integer number of seconds");

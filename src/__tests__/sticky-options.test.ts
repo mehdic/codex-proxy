@@ -102,11 +102,19 @@ test("sticky mode without a key returns invalid_session_key", () => {
   assert.equal(resolved.code, "invalid_session_key");
 });
 
-test("sticky disabled returns sticky_sessions_disabled", () => {
+test("sticky disabled ignores session key and falls back to pool mode", () => {
   const resolved = resolveSessionOptions(req({ "x-codex-proxy-session-key": "caller" }), parseConfig({}));
 
-  assert.equal(resolved.kind, "invalid");
-  assert.equal(resolved.code, "sticky_sessions_disabled");
+  assert.deepEqual(resolved, { kind: "ok", options: { mode: "pool", explicit: false } });
+});
+
+test("sticky disabled ignores explicit sticky mode and falls back to pool mode", () => {
+  const resolved = resolveSessionOptions(req({
+    "x-codex-proxy-session-key": "caller",
+    "x-codex-proxy-session-mode": "sticky",
+  }), parseConfig({}));
+
+  assert.deepEqual(resolved, { kind: "ok", options: { mode: "pool", explicit: false } });
 });
 
 test("ttl seconds clamps to min and max", () => {
