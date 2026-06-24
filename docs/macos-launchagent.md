@@ -2,6 +2,8 @@
 
 Run `codex-proxy` at login with a user LaunchAgent. This keeps the service local to your account and preserves the default localhost bind.
 
+For true pre-login system boot, use a LaunchDaemon instead of a LaunchAgent. Mehdi's Mac mini live instance uses `/Library/LaunchDaemons/fr.chaouachi.tradingagents.codex-proxy.plist` with `UserName=mehdichaouachi`, `RunAtLoad=true`, `KeepAlive=true`, and `ThrottleInterval=10`. The old user LaunchAgent service is disabled to avoid two processes fighting for `127.0.0.1:3466`.
+
 ## 1. Build the proxy
 
 ```bash
@@ -65,6 +67,16 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.mehdic.codex-proxy
 launchctl kickstart -k "gui/$(id -u)/com.mehdic.codex-proxy"
 launchctl print "gui/$(id -u)/com.mehdic.codex-proxy"
 launchctl print "gui/$(id -u)/com.mehdic.codex-proxy-pricing-refresh"
+```
+
+LaunchDaemon variant for system boot:
+
+```bash
+sudo install -o root -g wheel -m 0644 fr.chaouachi.tradingagents.codex-proxy.plist /Library/LaunchDaemons/
+launchctl disable "gui/$(id -u)/fr.chaouachi.tradingagents.codex-proxy"
+sudo launchctl bootstrap system /Library/LaunchDaemons/fr.chaouachi.tradingagents.codex-proxy.plist
+sudo launchctl kickstart -k system/fr.chaouachi.tradingagents.codex-proxy
+sudo launchctl print system/fr.chaouachi.tradingagents.codex-proxy
 ```
 
 Check liveness:
