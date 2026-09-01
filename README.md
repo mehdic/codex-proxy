@@ -196,6 +196,10 @@ If Codex does not report usage, the proxy falls back to a conservative local tok
 ## Models
 
 The proxy passes model names to Codex app-server. Current default is `gpt-5.5`.
+On startup it queries the authenticated local Codex app-server with its official
+`model/list` RPC and uses the returned list for `/models` and `/v1/models`.
+The built-in list below remains the fallback when discovery is unavailable or
+returns no models, so startup is never blocked by a transient Codex failure.
 
 Advertised models:
 

@@ -6,6 +6,7 @@ import { createRouter } from "./routes.js";
 import { invalidRequestError } from "./errors.js";
 import { drainGlobalPool, prewarmGlobalPool } from "../subprocess/pool.js";
 import { drainGlobalSessions } from "../subprocess/session-pool.js";
+import { refreshAvailableModels } from "./models.js";
 import { trace, traceError } from "./trace.js";
 
 export interface ServerOptions {
@@ -92,6 +93,7 @@ export async function startServer(options: ServerOptions = {}) {
     server.listen(port, host, () => {
       trace("server.start.listen", { host, port });
       prewarmGlobalPool();
+      void refreshAvailableModels();
       resolve({ app, server, host, port });
     });
   });

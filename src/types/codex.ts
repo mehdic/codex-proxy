@@ -62,6 +62,24 @@ export interface InitializeResponse {
   platformOs: string;
 }
 
+// ── Models ─────────────────────────────────────────────────────────
+
+export interface ModelListParams {
+  cursor?: string | null;
+  includeHidden?: boolean | null;
+  limit?: number | null;
+}
+
+export interface CodexModel {
+  id: string;
+  model: string;
+}
+
+export interface ModelListResponse {
+  data: CodexModel[];
+  nextCursor?: string | null;
+}
+
 // ── Thread ──────────────────────────────────────────────────────────
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";

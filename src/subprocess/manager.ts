@@ -28,6 +28,8 @@ import { trace, traceError } from "../server/trace.js";
 import type {
   RequestId,
   InitializeResponse,
+  ModelListParams,
+  ModelListResponse,
   ThreadStartResponse,
   TurnStartResponse,
   AgentMessageDeltaNotification,
@@ -177,6 +179,12 @@ export class CodexSubprocess {
     this.sendNotification("initialized");
 
     return initResult;
+  }
+
+  /** Return the models currently available to the authenticated Codex client. */
+  async listModels(params: ModelListParams = {}): Promise<ModelListResponse> {
+    if (this.dead) throw new CodexProxyError("codex", "app-server process is dead", { detail: this.stderr });
+    return this.sendRequest<ModelListResponse>("model/list", params);
   }
 
   /** Start a Codex thread on this app-server worker. */
