@@ -5,7 +5,6 @@
 import { Router, type Request, type Response } from "express";
 import { v4 as uuid } from "uuid";
 import {
-  AVAILABLE_MODELS,
   resolveModel,
   chatRequestToOptions,
   responsesRequestToOptions,
@@ -45,6 +44,7 @@ import { CodexProxyError, invalidRequestError, mapErrorToHttp } from "./errors.j
 import { NAME, VERSION } from "./version.js";
 import { annotateTurnUsage } from "./usage.js";
 import { pricingSnapshot } from "./pricing.js";
+import { getAvailableModels } from "./models.js";
 import type { ChatCompletionRequest, ResponseRequest, ModelObject, ModelListResponse } from "../types/openai.js";
 import { attachPhaseTracker } from "./phase-tracker.js";
 import { createProgressChunk, hasRenderableAssistantContent } from "./progress-utils.js";
@@ -57,7 +57,7 @@ type EndpointName = "chat_completions" | "responses";
 const MODEL_CREATED = Math.floor(Date.now() / 1000);
 
 function buildModelList(): ModelListResponse {
-  const data: ModelObject[] = AVAILABLE_MODELS.map((id) => ({
+  const data: ModelObject[] = getAvailableModels().map((id) => ({
     id,
     object: "model" as const,
     created: MODEL_CREATED,
